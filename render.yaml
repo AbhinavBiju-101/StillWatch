@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: tank-monitor
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn "app:create_app()" --workers 1 --threads 4 --timeout 60
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.3
+      - key: COOKIE_SECURE
+        value: "1"
+      - key: BEHIND_PROXY
+        value: "1"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false
+      - key: DEVICE_TOKEN
+        sync: false
+      - key: DEMO_PASSWORD
+        sync: false
+      - key: TESTING_PASSWORD
+        sync: false
+      - key: LLM_PROVIDER
+        value: none
+      - key: GEMINI_API_KEY
+        sync: false

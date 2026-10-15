@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Tank monitor{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+{% if session.get('dataset') %}
+<header>
+  <a class="brand" href="{{ url_for('web.tanks') }}">Tank monitor</a>
+  <nav>
+    <a href="{{ url_for('web.tanks') }}">Tanks</a>
+    <a href="{{ url_for('web.alerts') }}">Alerts</a>
+    <a href="{{ url_for('web.events') }}">Events</a>
+    <a href="{{ url_for('web.labs') }}">Lab results</a>
+  </nav>
+  <form method="post" action="{{ url_for('web.logout') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <span class="muted">{{ 'Demo (simulated data)' if session['dataset'] == 'demo' else 'Testing (pilot data)' }}</span>
+    <button class="link">Log out</button>
+  </form>
+</header>
+{% endif %}
+<main>
+  {% for m in get_flashed_messages() %}<div class="flash">{{ m }}</div>{% endfor %}
+  {% block content %}{% endblock %}
+</main>
+<footer>Detects unusual change in proxy readings (pH, TDS, turbidity). It does not certify water safety. Confirm with a lab test.</footer>
+</body>
+</html>

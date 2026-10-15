@@ -1,0 +1,6 @@
+{% macro badge(status) -%}
+  {%- set labels = {'green': 'No unusual change detected', 'yellow': 'Unusual change: test recommended',
+                    'red': 'Unusual change: test recommended', 'offline': 'No recent data', 'waiting': 'Waiting for data'} -%}
+  <span class="badge {{ status }}">{{ labels.get(status, status) }}</span>
+{%- endmacro %}
+{% macro fmt(v, unit='') %}{% if v is none %}-{% else %}{{ '%.2f'|format(v) }}{{ unit }}{% endif %}{% endmacro %}

@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Lab results{% endblock %}
+{% block content %}
+<h1>Lab results</h1>
+<p class="muted">Enter results from a sample sent to a lab. They are matched to the sensor timeline by collection time and used to tune alerts.</p>
+<section class="card">
+  <form method="post" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Tank <select name="device_id" required>{% for t in tanks %}<option value="{{ t.device_id }}">{{ t.name }}</option>{% endfor %}</select></label>
+    <label>Sample collected (India time, blank = now) <input type="datetime-local" name="collected_at"></label>
+    <label>pH <input name="ph" inputmode="decimal"></label>
+    <label>Turbidity (NTU) <input name="turbidity_ntu" inputmode="decimal"></label>
+    <label>TDS (ppm) <input name="tds_ppm" inputmode="decimal"></label>
+    <label>Bacterial test <select name="bacteria">{% for b in bacteria %}<option value="{{ b }}">{{ b | replace('_', ' ') }}</option>{% endfor %}</select></label>
+    <label>Note <input name="note" maxlength="500"></label>
+    <button>Save lab result</button>
+  </form>
+</section>
+<section class="card">
+  {% for l in labs %}<p>{{ l.collected_at | local }} · {{ l.name }} · pH {{ l.ph if l.ph is not none else '-' }},
+    turbidity {{ l.turbidity_ntu if l.turbidity_ntu is not none else '-' }} NTU,
+    TDS {{ l.tds_ppm if l.tds_ppm is not none else '-' }} ppm · bacteria: {{ l.bacteria | replace('_', ' ') }}
+    {% if l.note %}· {{ l.note }}{% endif %}</p>
+  {% else %}<p class="muted">No lab results yet.</p>{% endfor %}
+</section>
+{% endblock %}

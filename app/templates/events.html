@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Events{% endblock %}
+{% block content %}
+<h1>Events</h1>
+<p class="muted">Log what happened at the tank (cleaning, refill, rain). It explains sensor changes and improves alerts.</p>
+<section class="card">
+  <form method="post" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Tank <select name="device_id" required>{% for t in tanks %}<option value="{{ t.device_id }}">{{ t.name }}</option>{% endfor %}</select></label>
+    <label>What happened <select name="kind">{% for k in kinds %}<option>{{ k }}</option>{% endfor %}</select></label>
+    <label>When (India time, blank = now) <input type="datetime-local" name="when"></label>
+    <label>Note <input name="note" maxlength="500"></label>
+    <button>Log event</button>
+  </form>
+</section>
+<section class="card">
+  {% for e in events %}<p>{{ e.ts | local }} · {{ e.name }} · <b>{{ e.kind }}</b>{% if e.note %} · {{ e.note }}{% endif %}</p>
+  {% else %}<p class="muted">No events yet.</p>{% endfor %}
+</section>
+{% endblock %}

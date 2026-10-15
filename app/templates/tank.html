@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% from "_macros.html" import badge, fmt %}
+{% block title %}{{ tank.name }}{% endblock %}
+{% block content %}
+<p><a href="{{ url_for('web.tanks') }}">&larr; All tanks</a></p>
+<div class="between">
+  <h1>{{ tank.name }}</h1>
+  <a href="{{ url_for('web.tank_calibration', device_id=tank.device_id) }}">pH calibration</a>
+</div>
+<details class="muted"><summary>Rename tank</summary>
+  <form method="post" action="{{ url_for('web.tank_rename', device_id=tank.device_id) }}" class="inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input name="name" value="{{ tank.name }}" maxlength="80" required>
+    <button>Save</button>
+  </form>
+</details>
+{% if latest %}
+<section class="card">
+  <dl class="row">
+    <div><dt>pH</dt><dd>{{ fmt(latest.ph) }}</dd></div>
+    <div><dt>Turbidity</dt><dd>{{ fmt(latest.turbidity_ntu, ' NTU') }}</dd></div>
+    <div><dt>TDS</dt><dd>{{ fmt(latest.tds_ppm, ' ppm') }}</dd></div>
+    <div><dt>Temperature</dt><dd>{{ fmt(latest.temp_c, ' °C') }}</dd></div>
+    <div><dt>Updated</dt><dd>{{ latest.ts | local }}</dd></div>
+  </dl>
+</section>
+{% else %}
+<p class="muted">No readings yet.</p>
+{% endif %}
+
+<section class="card">
+  <div class="between"><h2>History</h2>
+    <select id="hours"><option value="6">6 h</option><option value="24" selected>24 h</option><option value="72">3 days</option><option value="168">7 days</option></select>
+  </div>
+  <div class="chart"><canvas id="c-ph"></canvas></div>
+  <div class="chart"><canvas id="c-turb"></canvas></div>
+  <div class="chart"><canvas id="c-tds"></canvas></div>
+</section>
+
+<section class="card">
+  <h2>Alerts</h2>
+  {% for a in alerts %}
+    <div class="alert {{ a.severity }}">
+      <div class="between"><b>{{ a.created_at | local }}</b>{{ badge(a.severity) }}</div>
+      <p>{{ a.message }}</p>
+      <p class="muted">{{ 'AI-assisted explanation' if a.message_source == 'llm' else 'Automatic summary' }}
+        {% if a.status == 'closed' %} · closed ({{ a.feedback | replace('_', ' ') }}){% endif %}</p>
+    </div>
+  {% else %}<p class="muted">No alerts for this tank.</p>{% endfor %}
+</section>
+
+<section class="card">
+  <h2>Logged events</h2>
+  {% for e in events %}<p>{{ e.ts | local }} · <b>{{ e.kind }}</b>{% if e.note %} · {{ e.note }}{% endif %}</p>
+  {% else %}<p class="muted">Nothing logged. <a href="{{ url_for('web.events') }}">Log an event</a>.</p>{% endfor %}
+</section>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>
+const url = {{ url_for('web.tank_data', device_id=tank.device_id) | tojson }};
+const specs = [
+  {id: 'c-ph', key: 'ph', title: 'pH', color: '#2563eb'},
+  {id: 'c-turb', key: 'turbidity_ntu', title: 'Turbidity (NTU)', color: '#d97706'},
+  {id: 'c-tds', key: 'tds_ppm', title: 'TDS (ppm)', color: '#059669'},
+];
+const charts = {};
+async function load() {
+  const data = await (await fetch(url + '?hours=' + document.getElementById('hours').value)).json();
+  for (const s of specs) {
+    const el = document.getElementById(s.id);
+    const has = data[s.key].some(v => v !== null);
+    el.parentElement.style.display = has ? '' : 'none';
+    if (!has) continue;
+    if (charts[s.id]) charts[s.id].destroy();
+    charts[s.id] = new Chart(el, {
+      type: 'line',
+      data: {labels: data.labels, datasets: [{label: s.title, data: data[s.key], borderColor: s.color,
+             borderWidth: 1.5, pointRadius: 0, spanGaps: true}]},
+      options: {maintainAspectRatio: false, animation: false,
+                plugins: {title: {display: true, text: s.title}, legend: {display: false}},
+                scales: {x: {ticks: {maxTicksLimit: 8}}}}
+    });
+  }
+}
+document.getElementById('hours').addEventListener('change', load);
+load();
+</script>
+{% endblock %}

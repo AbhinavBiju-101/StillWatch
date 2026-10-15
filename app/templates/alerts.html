@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% from "_macros.html" import badge %}
+{% block title %}Alerts{% endblock %}
+{% block content %}
+<h1>Alerts</h1>
+{% for a in alerts %}
+<section class="card alert {{ a.severity }}">
+  <div class="between">
+    <div><b>{{ a.name }}</b> · {{ a.created_at | local }}</div>{{ badge(a.severity) }}
+  </div>
+  <p>{{ a.message }}</p>
+  <details><summary>Why it fired</summary>
+    <ul>{% for f in a.findings %}<li>{{ f.detail }} <span class="muted">({{ f.detector | replace('_', ' ') }})</span></li>{% endfor %}</ul>
+  </details>
+  <p class="muted">{{ 'AI-assisted explanation' if a.message_source == 'llm' else 'Automatic summary' }}</p>
+  {% if a.status == 'open' %}
+  <form method="post" action="{{ url_for('web.alert_feedback', alert_id=a.id) }}" class="inline">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button name="feedback" value="confirmed">Real problem</button>
+    <button name="feedback" value="false_alarm" class="secondary">False alarm</button>
+  </form>
+  {% else %}<p class="muted">Closed: {{ a.feedback | replace('_', ' ') }}</p>{% endif %}
+</section>
+{% else %}<p class="muted">No alerts.</p>{% endfor %}
+{% endblock %}

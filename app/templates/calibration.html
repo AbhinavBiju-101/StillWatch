@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}pH calibration{% endblock %}
+{% block content %}
+<p><a href="{{ url_for('web.tank', device_id=tank.device_id) }}">&larr; {{ tank.name }}</a></p>
+<h1>pH calibration</h1>
+<p class="muted">The device always uploads raw millivolts. A calibration here converts them to pH, and can be applied
+to earlier readings too ("recalibrate retroactively"). A calibration applies from its start time until the next one begins.</p>
+
+<section class="card">
+  <h2>Add a two-point calibration</h2>
+  <p class="muted">Put the probe in each buffer, wait about a minute, and read the raw pH millivolts
+  (device serial output, or the latest value below if the probe was in the buffer).
+  {% if latest %}Latest raw pH reading: <b>{{ '%.0f'|format(latest.ph_raw_mv) }} mV</b> ({{ latest.ts | local }}).{% endif %}</p>
+  <form method="post" class="stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="add">
+    <label>Reading in pH 4 buffer (mV) <input name="mv_ph4" inputmode="decimal" required></label>
+    <label>Reading in pH 7 buffer (mV) <input name="mv_ph7" inputmode="decimal" required></label>
+    <label>Valid from (India time, blank = now) <input type="datetime-local" name="valid_from"></label>
+    <button>Save calibration</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Apply to stored readings</h2>
+  <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="recompute">
+    <button {% if not cals %}disabled{% endif %}>Recompute pH from raw mV</button>
+  </form>
+  <p class="muted">Rewrites the pH column only for readings that have a raw mV value and fall inside a calibration's period.
+  Alerts already raised are not re-evaluated.</p>
+</section>
+
+<section class="card">
+  <h2>History</h2>
+  {% for c in cals %}
+    <p>From {{ c.valid_from | local }} &middot; pH 4 = {{ c.params.mv_ph4 }} mV, pH 7 = {{ c.params.mv_ph7 }} mV
+      &middot; slope {{ '%.5f'|format(c.params.slope) }} pH/mV</p>
+  {% else %}<p class="muted">No calibrations recorded here yet.</p>{% endfor %}
+</section>
+{% endblock %}

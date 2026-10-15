@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% from "_macros.html" import badge, fmt %}
+{% block content %}
+<h1>Tanks</h1>
+{% if not tanks %}
+  <p class="muted">No tanks yet. A tank appears here as soon as its device sends a first reading.</p>
+{% endif %}
+<div class="grid">
+{% for t in tanks %}
+  <a class="card tank {{ t.status }}" href="{{ url_for('web.tank', device_id=t.device_id) }}">
+    <h2>{{ t.name }}</h2>
+    {{ badge(t.status) }}
+    <dl>
+      <div><dt>pH</dt><dd>{{ fmt(t.ph) }}</dd></div>
+      <div><dt>Turbidity</dt><dd>{{ fmt(t.turbidity_ntu, ' NTU') }}</dd></div>
+      <div><dt>TDS</dt><dd>{{ fmt(t.tds_ppm, ' ppm') }}</dd></div>
+    </dl>
+    <p class="muted">Last reading {{ t.last_ts | ago }}</p>
+  </a>
+{% endfor %}
+</div>
+{% endblock %}
