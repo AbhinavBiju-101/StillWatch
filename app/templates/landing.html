@@ -1,0 +1,211 @@
+{% extends "base.html" %}
+{% from "_macros.html" import quick_buttons %}
+{% block title %}Tank monitor: stored water changes between tests{% endblock %}
+{% block mainclass %}wide{% endblock %}
+
+{% block header %}
+<header class="land-nav">
+  <a class="brand" href="{{ url_for('web.landing') }}">
+    <img src="{{ url_for('static', filename='favicon.svg') }}" alt="" width="28" height="28">Tank monitor</a>
+  <nav>
+    <a href="#gap">The gap</a>
+    <a href="#try">Try it</a>
+    <a href="#sensors">Sensors</a>
+    <a href="#honest">Our promise</a>
+  </nav>
+  {% if logged_in %}
+    <a class="btn primary small" href="{{ url_for('web.tanks') }}">Go to dashboard</a>
+  {% else %}
+    <a class="btn small" href="{{ url_for('web.login') }}">Sign in</a>
+  {% endif %}
+</header>
+{% endblock %}
+
+{% block content %}
+{% for m in get_flashed_messages() %}<div class="flash">{{ m }}</div>{% endfor %}
+
+<!-- ============================================================ HERO -->
+<section class="hero">
+  <div class="hero-text">
+    <p class="eyebrow">Early warning for stored water</p>
+    <h1>Stored water changes between tests. <span class="accent">We make that visible.</span></h1>
+    <p class="lead">A low-cost node sits on the lid of a tank, watches pH, TDS and turbidity around the clock,
+      and tells the operator in plain language when something unusual happens, so they know when to look and when to send a sample to a lab.</p>
+    {% if logged_in %}
+      <div class="quick"><a class="btn primary" href="{{ url_for('web.tanks') }}">Go to dashboard</a></div>
+    {% else %}
+      {{ quick_buttons(quick_demo, quick_testing) }}
+      <p class="muted small-note">The demo uses simulated tanks. Nothing on this page is live data.</p>
+    {% endif %}
+  </div>
+
+  <figure class="hero-figure">
+    <svg viewBox="0 0 440 360" role="img" aria-label="A water tank with a lid-mounted ESP32 node and three probes">
+      <defs>
+        <clipPath id="tank-clip"><rect x="92" y="112" width="256" height="206" rx="14"/></clipPath>
+        <linearGradient id="water" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#8ccbf7"/><stop offset="1" stop-color="#2f86d6"/>
+        </linearGradient>
+      </defs>
+      <circle cx="60" cy="300" r="46" class="blob"/><circle cx="400" cy="250" r="30" class="blob"/>
+
+      <!-- tank -->
+      <rect x="90" y="110" width="260" height="210" rx="16" class="tank-body"/>
+      <g clip-path="url(#tank-clip)">
+        <rect x="80" y="178" width="300" height="160" fill="url(#water)"/>
+        <g class="wave"><path d="M-120 178 q25 -12 50 0 t50 0 t50 0 t50 0 t50 0 t50 0 t50 0 t50 0 t50 0 t50 0 t50 0 t50 0 t50 0 t50 0 t50 0 t50 0 V200 H-120 Z" fill="#8ccbf7" opacity=".55"/></g>
+        <circle class="bubble b1" cx="120" cy="300" r="4"/><circle class="bubble b2" cx="180" cy="310" r="3"/>
+        <circle class="bubble b3" cx="250" cy="305" r="5"/><circle class="bubble b4" cx="318" cy="300" r="3"/>
+      </g>
+      <rect x="80" y="96" width="280" height="16" rx="6" class="lid"/>
+
+      <!-- ESP32 node -->
+      <rect x="170" y="60" width="100" height="36" rx="7" class="board"/>
+      <text x="212" y="83" class="board-text" text-anchor="middle">ESP32</text>
+      <circle cx="255" cy="78" r="5" class="led pulse"/>
+      <path d="M278 74 q10 -8 20 0 M274 66 q16 -14 32 0 M270 58 q22 -20 44 0" class="wifi"/>
+
+      <!-- dashboard card -->
+      <rect x="318" y="22" width="108" height="66" rx="9" class="dash"/>
+      <polyline points="326,72 340,64 352,68 366,52 380,58 394,42 412,48" class="spark"/>
+      <text x="326" y="38" class="dash-text">Dashboard</text>
+
+      <!-- probes (interactive) -->
+      <g class="probe" data-probe="ph" tabindex="0" role="button" aria-label="pH probe">
+        <rect x="136" y="112" width="28" height="150" fill="transparent"/>
+        <line x1="150" y1="112" x2="150" y2="238" class="rod"/><circle cx="150" cy="244" r="9" fill="#f59e0b"/>
+        <text x="150" y="276" text-anchor="middle" class="probe-label">pH</text>
+      </g>
+      <g class="probe" data-probe="tds" tabindex="0" role="button" aria-label="TDS probe">
+        <rect x="206" y="112" width="28" height="150" fill="transparent"/>
+        <line x1="220" y1="112" x2="220" y2="214" class="rod"/><circle cx="220" cy="220" r="9" fill="#10b981"/>
+        <text x="220" y="252" text-anchor="middle" class="probe-label">TDS</text>
+      </g>
+      <g class="probe" data-probe="turbidity" tabindex="0" role="button" aria-label="Turbidity sensor">
+        <rect x="276" y="112" width="28" height="170" fill="transparent"/>
+        <line x1="290" y1="112" x2="290" y2="256" class="rod"/><circle cx="290" cy="262" r="9" fill="#e0f2fe" stroke="#38bdf8" stroke-width="3"/>
+        <text x="290" y="294" text-anchor="middle" class="probe-label">NTU</text>
+      </g>
+    </svg>
+    <figcaption id="probe-caption" class="caption" aria-live="polite">Tap a probe to see what it watches.</figcaption>
+  </figure>
+</section>
+
+<!-- ============================================================ GAP -->
+<section id="gap" class="band">
+  <div class="inner">
+    <p class="eyebrow">The gap</p>
+    <h2>Water is tested when it arrives, not while it sits.</h2>
+    <p class="lead">A lab result is one moment. A sensor is the whole timeline. Drag the event to see what a periodic lab sample can miss.</p>
+
+    <div class="figure">
+      <div class="figure-head"><span class="pill illustrative">Illustrative</span></div>
+      <div class="controls">
+        <label>Contamination starts at hour <b id="gap-start-out">30</b>
+          <input id="gap-start" type="range" min="2" max="64" value="30"></label>
+        <label>Lab samples the tank every
+          <select id="gap-interval">
+            <option value="12">12 hours</option><option value="24" selected>24 hours</option><option value="48">48 hours</option>
+          </select></label>
+      </div>
+      <svg id="gap-svg" viewBox="0 0 720 240" role="img" aria-label="Timeline comparing a sensor with periodic lab samples"></svg>
+      <div class="readouts">
+        <div class="readout sensor"><span class="k">Sensor</span><span id="gap-sensor"></span></div>
+        <div class="readout lab"><span class="k">Lab sampling</span><span id="gap-lab"></span></div>
+      </div>
+      <p class="muted small-note">A bacterial test also needs 24 to 48 hours of incubation before it gives any result. The events and timings here are made up to show the idea.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ TRY -->
+<section id="try" class="inner">
+  <p class="eyebrow">Try it</p>
+  <h2>Watch a tank, and disturb it.</h2>
+  <p class="lead">This is a simplified, in-browser illustration with simulated turbidity. The real system runs on stored readings from each tank.</p>
+
+  <div class="figure">
+    <div class="figure-head">
+      <span id="live-status" class="badge green">No unusual change detected</span>
+      <span class="pill illustrative">Simulated</span>
+    </div>
+    <svg id="live-svg" viewBox="0 0 720 240" role="img" aria-label="Live simulated turbidity chart"></svg>
+    <p id="live-message" class="live-message" aria-live="polite">Turbidity is steady around its usual level.</p>
+    <div class="controls">
+      <button id="live-event" class="btn primary">Stir up sediment</button>
+      <button id="live-reset" class="btn">Reset</button>
+      <button id="live-toggle" class="btn" aria-pressed="false">Pause</button>
+      <span class="stats" id="live-stats"></span>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ SENSORS -->
+<section id="sensors" class="band">
+  <div class="inner">
+    <p class="eyebrow">What the node watches</p>
+    <h2>Proxy signals, not a lab.</h2>
+    <div class="tabs" role="tablist" aria-label="Sensors">
+      <button role="tab" aria-selected="true" aria-controls="tab-ph" id="t-ph" data-tab="ph">pH</button>
+      <button role="tab" aria-selected="false" aria-controls="tab-tds" id="t-tds" data-tab="tds" tabindex="-1">TDS</button>
+      <button role="tab" aria-selected="false" aria-controls="tab-turbidity" id="t-turbidity" data-tab="turbidity" tabindex="-1">Turbidity</button>
+      <button role="tab" aria-selected="false" aria-controls="tab-next" id="t-next" data-tab="next" tabindex="-1">Coming next</button>
+    </div>
+
+    <div id="tab-ph" role="tabpanel" aria-labelledby="t-ph" class="tabpanel">
+      <div><h3>What it tells you</h3><p>Acidity or alkalinity. A sudden shift can hint at runoff, a leak or something added to the tank.</p></div>
+      <div><h3>What it cannot tell you</h3><p>What caused the change, or whether anything harmful is present.</p></div>
+    </div>
+    <div id="tab-tds" role="tabpanel" aria-labelledby="t-tds" class="tabpanel" hidden>
+      <div><h3>What it tells you</h3><p>The overall amount of dissolved material. A rise can mean salts or minerals are entering the water.</p></div>
+      <div><h3>What it cannot tell you</h3><p>Which substances are dissolved. It cannot see individual contaminants.</p></div>
+    </div>
+    <div id="tab-turbidity" role="tabpanel" aria-labelledby="t-turbidity" class="tabpanel" hidden>
+      <div><h3>What it tells you</h3><p>Cloudiness from suspended particles: sediment stirred up, runoff, or material shed from the tank walls.</p></div>
+      <div><h3>What it cannot tell you</h3><p>Clear water is not a certificate. Many problems do not make water cloudy.</p></div>
+    </div>
+    <div id="tab-next" role="tabpanel" aria-labelledby="t-next" class="tabpanel" hidden>
+      <div><h3>Temperature</h3><p>Warm water changes how a tank behaves, and helps explain drifts in other readings.</p></div>
+      <div><h3>ORP</h3><p>A hint of how quickly a disinfectant is fading between top-ups.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================================ HONEST -->
+<section id="honest" class="inner">
+  <p class="eyebrow">Our promise</p>
+  <h2>A smoke detector, not the fire investigation lab.</h2>
+  <div class="cols">
+    <div class="card good">
+      <h3>What it is</h3>
+      <ul><li>A continuous, low-cost change detector at the source</li>
+        <li>An answer to: has something unusual happened, and what should be done?</li></ul>
+    </div>
+    <div class="card warn">
+      <h3>What it is not</h3>
+      <ul><li>Not a safety certifier: sensors measure proxies</li>
+        <li>Cannot see bacteria, lead, arsenic, pesticides or fluoride</li></ul>
+    </div>
+  </div>
+  <div class="say">
+    <div class="say-box"><span class="k">We say</span>“No unusual change detected”</div>
+    <div class="say-box"><span class="k">Or</span>“Unusual change detected, test recommended”</div>
+    <div class="say-box never"><span class="k">Never</span>“The water is safe”</div>
+  </div>
+</section>
+
+<!-- ============================================================ CTA -->
+<section class="cta">
+  <h2>See it working</h2>
+  <p class="lead">Explore three simulated tanks, one of them in the middle of an event.</p>
+  {% if logged_in %}
+    <div class="quick"><a class="btn primary" href="{{ url_for('web.tanks') }}">Go to dashboard</a></div>
+  {% else %}
+    {{ quick_buttons(quick_demo, quick_testing) }}
+    <p class="muted small-note"><a href="{{ url_for('web.login') }}">Sign in with a password</a></p>
+  {% endif %}
+  <p class="muted small-note">A prototype from the VIT Chennai Multidisciplinary Engineering Project.</p>
+</section>
+{% endblock %}
+
+{% block scripts %}<script src="{{ url_for('static', filename='landing.js') }}" defer></script>{% endblock %}

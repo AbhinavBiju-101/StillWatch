@@ -3,14 +3,23 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#0b6fd6">
   <title>{% block title %}Tank monitor{% endblock %}</title>
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
+  <link rel="icon" href="{{ url_for('static', filename='favicon-32.png') }}" type="image/png" sizes="32x32">
+  <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" sizes="any">
+  <link rel="apple-touch-icon" href="{{ url_for('static', filename='apple-touch-icon.png') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
+{% block header %}
 {% if session.get('dataset') %}
-<header>
-  <a class="brand" href="{{ url_for('web.tanks') }}">Tank monitor</a>
+<header class="app-nav">
+  <a class="brand" href="{{ url_for('web.tanks') }}">
+    <img src="{{ url_for('static', filename='favicon.svg') }}" alt="" width="26" height="26">Tank monitor</a>
   <nav>
+    <a href="{{ url_for('web.landing') }}">Home</a>
     <a href="{{ url_for('web.tanks') }}">Tanks</a>
     <a href="{{ url_for('web.alerts') }}">Alerts</a>
     <a href="{{ url_for('web.events') }}">Events</a>
@@ -23,10 +32,12 @@
   </form>
 </header>
 {% endif %}
-<main>
+{% endblock %}
+<main class="{% block mainclass %}{% endblock %}">
   {% for m in get_flashed_messages() %}<div class="flash">{{ m }}</div>{% endfor %}
   {% block content %}{% endblock %}
 </main>
 <footer>Detects unusual change in proxy readings (pH, TDS, turbidity). It does not certify water safety. Confirm with a lab test.</footer>
+{% block scripts %}{% endblock %}
 </body>
 </html>

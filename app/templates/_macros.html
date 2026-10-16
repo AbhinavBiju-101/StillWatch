@@ -4,3 +4,21 @@
   <span class="badge {{ status }}">{{ labels.get(status, status) }}</span>
 {%- endmacro %}
 {% macro fmt(v, unit='') %}{% if v is none %}-{% else %}{{ '%.2f'|format(v) }}{{ unit }}{% endif %}{% endmacro %}
+{% macro quick_buttons(quick_demo, quick_testing) -%}
+<div class="quick">
+  {% if quick_demo %}
+  <form method="post" action="{{ url_for('web.quick_login') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="account" value="demo">
+    <button class="btn primary">Open demo</button>
+  </form>
+  {% else %}<a class="btn primary" href="{{ url_for('web.login', user='demo') }}">Open demo</a>{% endif %}
+  {% if quick_testing %}
+  <form method="post" action="{{ url_for('web.quick_login') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="account" value="testing">
+    <button class="btn">Open testing</button>
+  </form>
+  {% else %}<a class="btn" href="{{ url_for('web.login', user='testing') }}">Open testing</a>{% endif %}
+</div>
+{%- endmacro %}

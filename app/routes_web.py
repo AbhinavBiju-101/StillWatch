@@ -49,7 +49,27 @@ def _num(name):
         abort(400, f"{name} must be a number")
 
 
-# -------------------------------------------------------------------- login
+# -------------------------------------------------------------------- landing + login
+
+@bp.get("/")
+def landing():
+    cfg = current_app.config
+    return render_template("landing.html", quick_demo=cfg["QUICK_LOGIN_DEMO"],
+                           quick_testing=cfg["QUICK_LOGIN_TESTING"],
+                           logged_in="dataset" in session)
+
+
+def _start_session(dataset):
+    session.clear()
+    session["dataset"] = dataset
+    if dataset == "demo":                         # keep the demo looking live
+        try:
+            with db.connection() as conn:
+                service.ensure_demo_fresh(conn, current_app.config["DEMO_REFRESH_HOURS"],
+                                          current_app.config["ALERT_COOLDOWN_MIN"])
+        except Exception:
+            log.exception("Could not refresh demo data")
+
 
 @bp.route("/login", methods=["GET", "POST"])
 def login():
@@ -57,36 +77,49 @@ def login():
         ip = request.remote_addr or "?"
         if auth.locked_out(ip):
             flash("Too many failed attempts. Try again in a few minutes.")
-            return render_template("login.html"), 429
+            return render_template("login.html", prefill="", **_quick_flags()), 429
         dataset = auth.check_login(request.form.get("username", "").strip().lower(),
                                    request.form.get("password", ""))
         if dataset:
             auth.clear_failures(ip)
-            session.clear()
-            session["dataset"] = dataset
-            if dataset == "demo":
-                try:
-                    with db.connection() as conn:
-                        service.ensure_demo_fresh(conn, current_app.config["DEMO_REFRESH_HOURS"],
-                                                  current_app.config["ALERT_COOLDOWN_MIN"])
-                except Exception:
-                    log.exception("Could not refresh demo data")
+            _start_session(dataset)
             nxt = request.args.get("next", "")
             return redirect(nxt if nxt.startswith("/") and not nxt.startswith("//") else url_for("web.tanks"))
         auth.record_failure(ip)
         flash("Wrong username or password.")
-    return render_template("login.html")
+    prefill = request.args.get("user", "")
+    return render_template("login.html", prefill=prefill if prefill in auth.ACCOUNTS else "",
+                           **_quick_flags())
+
+
+def _quick_flags():
+    cfg = current_app.config
+    return {"quick_demo": cfg["QUICK_LOGIN_DEMO"], "quick_testing": cfg["QUICK_LOGIN_TESTING"]}
+
+
+@bp.post("/login/quick")
+def quick_login():
+    """One-click sign-in. Each account must be switched on in the config."""
+    cfg = current_app.config
+    account = request.form.get("account")
+    if account == "demo" and cfg["QUICK_LOGIN_DEMO"]:
+        _start_session("demo")
+    elif account == "testing" and cfg["QUICK_LOGIN_TESTING"]:
+        _start_session("pilot")
+    else:
+        abort(403, "Quick sign-in is not enabled for that account.")
+    return redirect(url_for("web.tanks"))
 
 
 @bp.post("/logout")
 def logout():
     session.clear()
-    return redirect(url_for("web.login"))
+    return redirect(url_for("web.landing"))
 
 
 # -------------------------------------------------------------------- pages
 
-@bp.get("/")
+@bp.get("/tanks")
 @login_required
 def tanks():
     with db.connection() as conn:

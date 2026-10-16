@@ -18,7 +18,8 @@ app/
   service.py       ingest, analysis, alerts, demo seeding, tank status
   llm.py           Gemini / Ollama / none, with an output validator
   routes_api.py    POST/GET /api/readings, GET /api/health
-  routes_web.py    login, tanks, tank detail (rename, pH calibration), alerts, events, lab results
+  routes_web.py    landing page, login + quick sign-in, tanks, tank detail (rename, pH calibration), alerts, events, lab results
+  static/          style.css (light theme), landing.js (interactive figures), favicon.svg/.ico/.png (half-clear, half-murky drop)
 schema.sql         tables (run with `flask --app app init-db`)
 tools/fake_device.py   pretend to be the ESP32
 firmware/              sensor_serial_test (bench check) and water_node (full node firmware), see firmware/README.md
@@ -33,6 +34,15 @@ tests/                 python -m unittest discover -s tests -t .
 | `testing` | tanks in the `pilot` dataset | real device data posted to `/api/readings` |
 
 Passwords come from `DEMO_PASSWORD` / `TESTING_PASSWORD`. An empty password disables the account.
+
+**Home page and one-click sign-in.** `/` is a public landing page with interactive figures; the dashboard is at `/tanks`.
+The home and sign-in pages have **Open demo** and **Open testing** buttons:
+
+| Setting | Default | Effect |
+|---|---|---|
+| `QUICK_LOGIN_DEMO` | `1` | Open demo signs straight in. Safe: it only shows simulated data. |
+| `QUICK_LOGIN_TESTING` | `0` | When `0`, Open testing opens the sign-in form with the username filled in. When `1`, it signs straight in to the **real pilot data with no password**. Set it to `1` only in your local `.env`, never on a public deployment. |
+
 Devices can only create or write `pilot` tanks; a device id that matches a demo tank is rejected (409).
 
 ## Run locally (Windows PowerShell / VS Code)
@@ -84,6 +94,7 @@ are defined in Python. `python run.py` just calls `create_app()` and starts the 
 | `LLM_PROVIDER` | `none` (default), `gemini`, or `ollama` |
 | `GEMINI_API_KEY`, `GEMINI_MODEL` | check the current model names and free-tier limits |
 | `OLLAMA_URL`, `OLLAMA_MODEL` | local development only; Render's free tier cannot run a model |
+| `QUICK_LOGIN_DEMO`, `QUICK_LOGIN_TESTING` | see Accounts above |
 | `COOKIE_SECURE` | `1` when served over HTTPS |
 | `BEHIND_PROXY` | `1` on Render so the real client IP is used for the login limit |
 
@@ -135,6 +146,11 @@ periods it covers once you recompute.
    for tuning.
 
 ## Known limitations
+
+- The landing page is public. It stays high-level on purpose (no thresholds, detector internals or prompts), which matters if
+  you intend to seek patent protection. Its interactive figures are simplified, simulated illustrations.
+- The front end has been checked with unit tests and a scripted DOM test of `landing.js`, not in a real browser.
+  Look at it once in Chrome and on a phone-width window.
 
 - Hard limits in `detectors.py` are placeholders: verify against the standard you cite (e.g. BIS IS 10500).
 - Detector thresholds are tuned on simulated data only. Retune with real pilot data and lab results.

@@ -25,6 +25,11 @@ class Config:
     OLLAMA_URL = _env("OLLAMA_URL", "http://localhost:11434")
     OLLAMA_MODEL = _env("OLLAMA_MODEL", "llama3.2:3b")
 
+    # One-click sign-in buttons. Demo only shows simulated data, so it is on by default.
+    # Testing opens the REAL pilot data with no password: enable only on your own machine.
+    QUICK_LOGIN_DEMO = _env("QUICK_LOGIN_DEMO", "1") == "1"
+    QUICK_LOGIN_TESTING = _env("QUICK_LOGIN_TESTING", "0") == "1"
+
     ALERT_COOLDOWN_MIN = int(_env("ALERT_COOLDOWN_MIN", "180"))
     DEMO_REFRESH_HOURS = float(_env("DEMO_REFRESH_HOURS", "2"))
     BEHIND_PROXY = _env("BEHIND_PROXY", "0") == "1"   # 1 on Render: trust X-Forwarded-For/-Proto

@@ -75,7 +75,7 @@ class WebTests(unittest.TestCase):
 
     # ---- web
     def test_pages_redirect_to_login_when_logged_out(self):
-        for path in ("/", "/alerts", "/events", "/labs", "/tank/x"):
+        for path in ("/tanks", "/alerts", "/events", "/labs", "/tank/x"):
             r = self.client.get(path)
             self.assertEqual(r.status_code, 302, path)
             self.assertIn("/login", r.headers["Location"])
@@ -109,6 +109,64 @@ class WebTests(unittest.TestCase):
     def test_post_without_csrf_token_is_rejected(self):
         r = self.client.post("/login", data={"username": "demo", "password": "demo-pw"})
         self.assertEqual(r.status_code, 400)
+
+    # ---- landing + quick sign-in
+    def test_landing_is_public_and_needs_no_database(self):
+        r = self.client.get("/")
+        self.assertEqual(r.status_code, 200)
+        html = r.get_data(as_text=True)
+        self.assertIn("Open demo", html)
+        self.assertIn("Open testing", html)
+        self.assertIn("favicon.svg", html)
+        self.assertNotRegex(html.lower(), r"water is safe\b(?!”)")   # only ever quoted as the thing we never say
+
+    def test_quick_demo_signs_in_demo_dataset(self):
+        tok = self.csrf("/")
+        with mock.patch("app.db.connection", fake_connection), \
+             mock.patch("app.service.ensure_demo_fresh") as fresh:
+            r = self.client.post("/login/quick", data={"account": "demo", "csrf_token": tok})
+        self.assertEqual(r.status_code, 302)
+        self.assertTrue(r.headers["Location"].endswith("/tanks"))
+        fresh.assert_called_once()
+        with self.client.session_transaction() as s:
+            self.assertEqual(s["dataset"], "demo")
+
+    def test_quick_testing_is_off_by_default(self):
+        tok = self.csrf("/")
+        r = self.client.post("/login/quick", data={"account": "testing", "csrf_token": tok})
+        self.assertEqual(r.status_code, 403)
+        with self.client.session_transaction() as s:
+            self.assertNotIn("dataset", s)
+        # and the landing page falls back to a link to the password form, not a one-click form
+        html = self.client.get("/").get_data(as_text=True)
+        self.assertIn("/login?user=testing", html)
+
+    def test_quick_testing_when_enabled(self):
+        app = create_app({**CFG, "QUICK_LOGIN_TESTING": True})
+        c = app.test_client()
+        html = c.get("/").get_data(as_text=True)
+        tok = re.search(r'name="csrf_token" value="([0-9a-f]+)"', html).group(1)
+        r = c.post("/login/quick", data={"account": "testing", "csrf_token": tok})
+        self.assertEqual(r.status_code, 302)
+        with c.session_transaction() as s:
+            self.assertEqual(s["dataset"], "pilot")
+
+    def test_quick_login_needs_csrf_and_known_account(self):
+        self.assertEqual(self.client.post("/login/quick", data={"account": "demo"}).status_code, 400)
+        tok = self.csrf("/")
+        self.assertEqual(self.client.post("/login/quick", data={"account": "admin", "csrf_token": tok}).status_code, 403)
+
+    def test_login_prefills_only_known_usernames(self):
+        html = self.client.get("/login?user=testing").get_data(as_text=True)
+        self.assertIn('value="testing"', html)
+        html = self.client.get('/login?user="><script>alert(1)</script>').get_data(as_text=True)
+        self.assertNotIn("<script>alert(1)", html)
+
+    def test_logout_returns_to_landing(self):
+        self.login("testing", "test-pw")
+        r = self.client.post("/logout", data={"csrf_token": self.csrf("/login")})
+        self.assertEqual(r.status_code, 302)
+        self.assertEqual(r.headers["Location"], "/")
 
     def test_login_rate_limit(self):
         for _ in range(5):

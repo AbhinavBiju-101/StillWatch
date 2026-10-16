@@ -1,14 +1,19 @@
 {% extends "base.html" %}
-{% block title %}Log in{% endblock %}
+{% from "_macros.html" import quick_buttons %}
+{% block title %}Sign in{% endblock %}
 {% block content %}
 <section class="card narrow">
-  <h1>Tank monitor</h1>
+  <h1>Sign in</h1>
   <form method="post">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <label>Username <input name="username" autocomplete="username" required autofocus></label>
-    <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
-    <button>Log in</button>
+    <label>Username <input name="username" value="{{ prefill }}" autocomplete="username" required {% if not prefill %}autofocus{% endif %}></label>
+    <label>Password <input name="password" type="password" autocomplete="current-password" required {% if prefill %}autofocus{% endif %}></label>
+    <button>Sign in</button>
   </form>
   <p class="muted">Accounts: <b>demo</b> (simulated data) and <b>testing</b> (pilot data).</p>
+  <hr>
+  <p class="muted">Or skip the password:</p>
+  {{ quick_buttons(quick_demo, quick_testing) }}
+  <p class="muted"><a href="{{ url_for('web.landing') }}">&larr; Back to the home page</a></p>
 </section>
 {% endblock %}

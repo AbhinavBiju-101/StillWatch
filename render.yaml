@@ -23,6 +23,10 @@ services:
         sync: false
       - key: TESTING_PASSWORD
         sync: false
+      - key: QUICK_LOGIN_DEMO
+        value: "1"
+      - key: QUICK_LOGIN_TESTING
+        value: "0"
       - key: LLM_PROVIDER
         value: none
       - key: GEMINI_API_KEY
