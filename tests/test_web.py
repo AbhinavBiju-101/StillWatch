@@ -16,6 +16,11 @@ def fake_connection():
     yield object()
 
 
+def _recent_ts():
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 class WebTests(unittest.TestCase):
     def setUp(self):
         from app import auth
@@ -48,9 +53,10 @@ class WebTests(unittest.TestCase):
         self.assertTrue(r.get_json()["errors"])
 
     def test_post_stores_and_starts_llm_only_for_new_alerts(self):
-        good = {"schema": 1, "device_id": "tank-1", "ts": "2026-10-09T10:15:00Z", "ph": 7.2}
+        good = {"schema": 1, "device_id": "tank-1", "ts": _recent_ts(), "ph": 7.2}
         hdr = {"X-Device-Token": "dev-token"}
         with mock.patch("app.db.connection", fake_connection), \
+             mock.patch("app.devices.shared_token_blocked", return_value=False), \
              mock.patch("app.service.start_interpretation") as start, \
              mock.patch("app.service.ingest",
                         return_value={"inserted": True, "alert_id": 5, "context": {"k": 1}}):
@@ -59,6 +65,7 @@ class WebTests(unittest.TestCase):
         start.assert_called_once()
 
         with mock.patch("app.db.connection", fake_connection), \
+             mock.patch("app.devices.shared_token_blocked", return_value=False), \
              mock.patch("app.service.start_interpretation") as start, \
              mock.patch("app.service.ingest",
                         return_value={"inserted": False, "alert_id": None, "context": None}):
@@ -69,6 +76,7 @@ class WebTests(unittest.TestCase):
     def test_demo_tank_id_conflict_is_409(self):
         good = {"schema": 1, "device_id": "tank-demo-hostel", "ph": 7.2}
         with mock.patch("app.db.connection", fake_connection), \
+             mock.patch("app.devices.shared_token_blocked", return_value=False), \
              mock.patch("app.service.ingest", side_effect=ValueError("device_id belongs to a demo tank")):
             r = self.client.post("/api/readings", json=good, headers={"X-Device-Token": "dev-token"})
         self.assertEqual(r.status_code, 409)

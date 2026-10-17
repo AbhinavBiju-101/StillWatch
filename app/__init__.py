@@ -29,6 +29,15 @@ def create_app(config=None):
     def local(dt, fmt="%d %b, %H:%M"):
         return dt.astimezone(IST).strftime(fmt) if dt else "-"
 
+    @app.template_filter("from_epoch")
+    def from_epoch(t):
+        return datetime.fromtimestamp(t, timezone.utc)
+
+    @app.template_filter("mins")
+    def mins(m):
+        m = int(m)
+        return f"{m} min" if m < 60 else f"{m // 60} h {m % 60:02d} min" if m % 60 else f"{m // 60} h"
+
     @app.template_filter("ago")
     def ago(dt):
         if not dt:
@@ -41,6 +50,9 @@ def create_app(config=None):
         if mins < 48 * 60:
             return f"{mins // 60} h ago"
         return f"{mins // 1440} d ago"
+
+    from . import cli
+    cli.register(app)
 
     @app.cli.command("init-db")
     def init_db():

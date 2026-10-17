@@ -1,20 +1,49 @@
-{% extends "base.html" %}
-{% block title %}Events{% endblock %}
+{% extends "app_base.html" %}
+{% from "_macros.html" import icon %}
+{% block title %}Events · StillWatch{% endblock %}
 {% block content %}
-<h1>Events</h1>
-<p class="muted">Log what happened at the tank (cleaning, refill, rain). It explains sensor changes and improves alerts.</p>
-<section class="card">
-  <form method="post" class="stack">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <label>Tank <select name="device_id" required>{% for t in tanks %}<option value="{{ t.device_id }}">{{ t.name }}</option>{% endfor %}</select></label>
-    <label>What happened <select name="kind">{% for k in kinds %}<option>{{ k }}</option>{% endfor %}</select></label>
-    <label>When (India time, blank = now) <input type="datetime-local" name="when"></label>
-    <label>Note <input name="note" maxlength="500"></label>
-    <button>Log event</button>
-  </form>
-</section>
-<section class="card">
-  {% for e in events %}<p>{{ e.ts | local }} · {{ e.name }} · <b>{{ e.kind }}</b>{% if e.note %} · {{ e.note }}{% endif %}</p>
-  {% else %}<p class="muted">No events yet.</p>{% endfor %}
-</section>
+{% set ICON = {'cleaning': 'broom', 'refill': 'drop', 'rain': 'rain', 'maintenance': 'wrench'} %}
+<header class="page-head">
+  <div>
+    <h1>Events</h1>
+    <p class="muted">Log what happened at the tank. A cleaning or a refill explains a sudden change in the readings, so alerts stay useful.</p>
+  </div>
+</header>
+<div class="two rev">
+  <section class="panel">
+    <h2>Log an event</h2>
+    <form method="post" class="form-grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Tank
+        <select name="device_id" required>{% for t in tanks %}<option value="{{ t.device_id }}" {{ 'selected' if t.device_id == selected }}>{{ t.name }}</option>{% endfor %}</select>
+      </label>
+      <fieldset>
+        <legend>What happened</legend>
+        <div class="kinds">
+          {% for k in kinds %}<label class="kind"><input type="radio" name="kind" value="{{ k }}" {{ 'checked' if loop.first }}><span>{{ icon(ICON.get(k, 'dots')) }}{{ k }}</span></label>{% endfor %}
+        </div>
+      </fieldset>
+      <label>When <span class="hint">India time. Leave blank for now.</span>
+        <input type="datetime-local" name="when">
+      </label>
+      <label>Note <span class="hint">Optional. For example, "Cleaned with chlorine, rinsed twice".</span>
+        <input name="note" maxlength="500">
+      </label>
+      <button class="btn primary">Log event</button>
+    </form>
+  </section>
+  <section class="panel">
+    <h2>Recent events</h2>
+    {% if events %}
+    <ul class="timeline">
+      {% for e in events %}
+      <li><span class="tl-ico">{{ icon(ICON.get(e.kind, 'dots')) }}</span>
+        <div><b>{{ e.kind }}</b> <span class="who">at {{ e.name }}</span><div class="tl-time">{{ e.ts | local }}</div>{% if e.note %}<p>{{ e.note }}</p>{% endif %}</div></li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <div class="empty" style="border:0;background:none">{{ icon('log') }}<h2>No events yet</h2><p>Your first cleaning, refill or repair will show up here.</p></div>
+    {% endif %}
+  </section>
+</div>
 {% endblock %}

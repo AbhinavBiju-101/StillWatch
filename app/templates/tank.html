@@ -1,88 +1,250 @@
-{% extends "base.html" %}
-{% from "_macros.html" import badge, fmt %}
-{% block title %}{{ tank.name }}{% endblock %}
+{% extends "app_base.html" %}
+{% from "_macros.html" import badge, kind_badge, fmt, icon %}
+{% block title %}{{ tank.name }} · StillWatch{% endblock %}
 {% block content %}
-<p><a href="{{ url_for('web.tanks') }}">&larr; All tanks</a></p>
-<div class="between">
-  <h1>{{ tank.name }}</h1>
-  <a href="{{ url_for('web.tank_calibration', device_id=tank.device_id) }}">pH calibration</a>
-</div>
-<details class="muted"><summary>Rename tank</summary>
-  <form method="post" action="{{ url_for('web.tank_rename', device_id=tank.device_id) }}" class="inline">
+{% set VERDICT = {
+  'green': ('No unusual change detected', 'Readings are in line with this tank\'s recent behaviour. That is a statement about change, not a safety check: StillWatch cannot see bacteria or heavy metals.'),
+  'yellow': ('Unusual change detected, test recommended', 'Something moved outside this tank\'s usual behaviour. Check the alert below for what changed and what to do.'),
+  'red': ('Unusual change detected, test recommended', 'Several signals moved at once, or one moved a lot. Inspect the tank and send a sample to a lab.'),
+  'offline': ('No recent data', 'This node has not reported for over 30 minutes. Check its power and WiFi.'),
+  'waiting': ('Waiting for data', 'Readings, charts and alerts appear as soon as the device sends its first message.'),
+} %}
+<a class="crumb" href="{{ url_for('web.tanks') }}">&larr; All tanks</a>
+<header class="tank-head">
+  <div class="title-row">
+    <h1>{{ tank.name }}</h1>
+    <button class="btn small" type="button" id="rename-btn" aria-expanded="false" aria-controls="rename">Rename</button>
+  </div>
+  <form method="post" action="{{ url_for('web.tank_rename', device_id=tank.device_id) }}" class="rename" id="rename">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <input name="name" value="{{ tank.name }}" maxlength="80" required>
-    <button>Save</button>
+    <input name="name" value="{{ tank.name }}" maxlength="80" required aria-label="Tank name">
+    <button class="btn small primary">Save name</button>
   </form>
-</details>
-{% if latest %}
-<section class="card">
-  <dl class="row">
-    <div><dt>pH</dt><dd>{{ fmt(latest.ph) }}</dd></div>
-    <div><dt>Turbidity</dt><dd>{{ fmt(latest.turbidity_ntu, ' NTU') }}</dd></div>
-    <div><dt>TDS</dt><dd>{{ fmt(latest.tds_ppm, ' ppm') }}</dd></div>
-    <div><dt>Temperature</dt><dd>{{ fmt(latest.temp_c, ' °C') }}</dd></div>
-    <div><dt>Updated</dt><dd>{{ latest.ts | local }}</dd></div>
-  </dl>
+  <div class="id-line"><code>{{ tank.device_id }}</code>{% if tank.location %}<span>{{ tank.location }}</span>{% endif %}
+    <a href="{{ url_for('web.tank_calibration', device_id=tank.device_id) }}">pH calibration</a>
+    <a href="{{ url_for('web.events', tank=tank.device_id) }}">Log an event</a>
+    <a href="{{ url_for('web.labs', tank=tank.device_id) }}">Add a lab result</a></div>
+</header>
+
+{% if device and device.faults %}
+<div class="flash fault" role="alert"><b>Sensor problem reported by the device:</b>
+  {{ device.faults | join(', ') }}. Readings from {{ 'that sensor' if device.faults | length == 1 else 'those sensors' }} are left out until it recovers. Check the probe wiring and that it is submerged.</div>
+{% endif %}
+<section class="verdict {{ status }}" aria-label="Status">
+  <div><b>{{ VERDICT[status][0] }}</b><p>{{ VERDICT[status][1] }}</p></div>
 </section>
-{% else %}
-<p class="muted">No readings yet.</p>
+<div style="height:1.25rem"></div>
+
+{% if latest %}
+<section class="tiles" aria-label="Latest readings">
+  <div class="tile" data-metric="ph"><span class="k"><i style="background:#2f7fd0"></i>pH</span><span class="v">{{ fmt(latest.ph) }}</span><span class="r"></span></div>
+  <div class="tile" data-metric="turbidity_ntu"><span class="k"><i style="background:#d98a1f"></i>Turbidity</span><span class="v">{{ fmt(latest.turbidity_ntu) }}<small>NTU</small></span><span class="r"></span></div>
+  <div class="tile" data-metric="tds_ppm"><span class="k"><i style="background:#1f9e72"></i>TDS</span><span class="v">{{ '%.0f'|format(latest.tds_ppm) if latest.tds_ppm is not none else '-' }}<small>ppm</small></span><span class="r"></span></div>
+  <div class="tile" data-metric="temp_c"><span class="k"><i style="background:#8b6bd6"></i>Temperature</span><span class="v">{{ fmt(latest.temp_c) }}<small>°C</small></span><span class="r"></span></div>
+</section>
+<p class="updated">Updated {{ latest.ts | local }} ({{ latest.ts | ago }})</p>
 {% endif %}
 
-<section class="card">
-  <div class="between"><h2>History</h2>
-    <select id="hours"><option value="6">6 h</option><option value="24" selected>24 h</option><option value="72">3 days</option><option value="168">7 days</option></select>
-  </div>
-  <div class="chart"><canvas id="c-ph"></canvas></div>
-  <div class="chart"><canvas id="c-turb"></canvas></div>
-  <div class="chart"><canvas id="c-tds"></canvas></div>
-</section>
-
-<section class="card">
-  <h2>Alerts</h2>
-  {% for a in alerts %}
-    <div class="alert {{ a.severity }}">
-      <div class="between"><b>{{ a.created_at | local }}</b>{{ badge(a.severity) }}</div>
-      <p>{{ a.message }}</p>
-      <p class="muted">{{ 'AI-assisted explanation' if a.message_source == 'llm' else 'Automatic summary' }}
-        {% if a.status == 'closed' %} · closed ({{ a.feedback | replace('_', ' ') }}){% endif %}</p>
+<section class="panel">
+  <div class="panel-head">
+    <h2>History</h2>
+    <div class="seg" role="group" aria-label="Time range" id="range">
+      <button type="button" data-h="6" aria-pressed="false">6 h</button>
+      <button type="button" data-h="24" aria-pressed="true">24 h</button>
+      <button type="button" data-h="72" aria-pressed="false">3 days</button>
+      <button type="button" data-h="168" aria-pressed="false">7 days</button>
     </div>
-  {% else %}<p class="muted">No alerts for this tank.</p>{% endfor %}
+  </div>
+  <div id="charts">
+    <div class="chart-block" data-key="ph"><div class="chart-title"><i style="background:#2f7fd0"></i>pH</div><div class="chart"><canvas id="c-ph" role="img" aria-label="pH over time"></canvas></div></div>
+    <div class="chart-block" data-key="turbidity_ntu"><div class="chart-title"><i style="background:#d98a1f"></i>Turbidity (NTU)</div><div class="chart"><canvas id="c-turb" role="img" aria-label="Turbidity over time"></canvas></div></div>
+    <div class="chart-block" data-key="tds_ppm"><div class="chart-title"><i style="background:#1f9e72"></i>TDS (ppm)</div><div class="chart"><canvas id="c-tds" role="img" aria-label="TDS over time"></canvas></div></div>
+  </div>
+  <p class="muted" id="no-data" hidden>No readings in this time range.</p>
+  <div class="legend"><span><i class="lv"></i>Logged event</span><span><i class="ld"></i>Lab sample</span></div>
 </section>
 
-<section class="card">
-  <h2>Logged events</h2>
-  {% for e in events %}<p>{{ e.ts | local }} · <b>{{ e.kind }}</b>{% if e.note %} · {{ e.note }}{% endif %}</p>
-  {% else %}<p class="muted">Nothing logged. <a href="{{ url_for('web.events') }}">Log an event</a>.</p>{% endfor %}
-</section>
+<div class="two">
+  <section class="panel">
+    <div class="panel-head"><h2>Alerts</h2><a href="{{ url_for('web.alerts') }}">All alerts</a></div>
+    {% for a in alerts %}
+      <div class="mini-alert {{ a.severity if a.status == 'open' else 'closed' }}">
+        <div class="alert-time">{{ kind_badge(a) }}<span>{{ a.created_at | local }}</span></div>
+        <p>{{ a.message }}</p>
+        <p class="alert-src">{{ 'AI-assisted explanation' if a.message_source == 'llm' else 'Automatic summary' }}{% if a.status == 'closed' %} · closed{% if a.feedback %} as {{ a.feedback | replace('_', ' ') }}{% endif %}{% endif %}</p>
+        {% if a.status == 'open' %}
+        <form method="post" action="{{ url_for('web.alert_feedback', alert_id=a.id) }}" class="fb">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          {% if a.kind == 'device' %}<button class="btn small" name="feedback" value="dismiss">Dismiss</button>{% else %}<button class="btn small primary" name="feedback" value="confirmed">Real problem</button>
+          <button class="btn small" name="feedback" value="false_alarm">False alarm</button>{% endif %}
+        </form>{% endif %}
+      </div>
+    {% else %}<p class="muted">No alerts for this tank. When something changes unusually, it will show up here.</p>{% endfor %}
+  </section>
+  <section class="panel">
+    <div class="panel-head"><h2>Logged events</h2><a href="{{ url_for('web.events', tank=tank.device_id) }}">Log one</a></div>
+    {% if events %}
+    <ul class="timeline">
+      {% for e in events %}<li><span class="tl-ico">{{ icon({'cleaning': 'broom', 'refill': 'drop', 'rain': 'rain', 'maintenance': 'wrench'}.get(e.kind, 'dots')) }}</span>
+        <div><b>{{ e.kind }}</b><span class="tl-time"> &middot; {{ e.ts | local }}</span>{% if e.note %}<p>{{ e.note }}</p>{% endif %}</div></li>{% endfor %}
+    </ul>
+    {% else %}<p class="muted">Nothing logged. Cleanings, refills and rain explain sensor changes, so log them as they happen.</p>{% endif %}
+  </section>
+</div>
 
+{% if insights %}
+<section class="panel" id="insights">
+  <div class="panel-head"><h2>After the last unusual change</h2><span class="pill-note">Experimental</span></div>
+  <div class="insights">
+    {% for i in insights %}
+    <div class="insight">
+      <b>{{ i.label }}</b>
+      <p>Peaked at <span class="num">{{ '%.2f'|format(i.peak) }}{{ ' ' ~ i.unit if i.unit }}</span> around {{ (i.peak_t | from_epoch) | local('%d %b, %H:%M') }}, against a usual <span class="num">{{ '%.2f'|format(i.baseline) }}</span>.</p>
+      <dl>
+        <div><dt>{{ 'Back to normal after' if i.recovered else 'Still elevated after' }}</dt><dd>{{ i.recovery_minutes | mins }}</dd></div>
+        <div><dt>Settling half-life</dt><dd>{{ (i.half_life_minutes | mins) if i.half_life_minutes else 'not enough data' }}</dd></div>
+      </dl>
+    </div>
+    {% endfor %}
+  </div>
+  <p class="muted">Recovery time and settling rate are candidate signals. Whether they predict lab results is what the pilot's paired sensor and lab data will show, so treat them as context, not a verdict.</p>
+</section>
+{% endif %}
+
+{% if device %}
+<section class="panel" id="device">
+  <div class="panel-head"><h2>Device</h2><a href="{{ url_for('web.devices_page') }}">All devices</a></div>
+  <dl class="kv">
+    <div><dt>Last contact</dt><dd>{{ device.last_seen_at | ago }}</dd></div>
+    <div><dt>Firmware</dt><dd>{{ device.fw or '-' }}</dd></div>
+    <div><dt>WiFi signal</dt><dd>{{ (device.rssi ~ ' dBm') if device.rssi is not none else '-' }}</dd></div>
+    <div><dt>Unsent in flash</dt><dd>{{ device.queued if device.queued is not none else '-' }}</dd></div>
+    <div><dt>Uptime</dt><dd>{{ ((device.uptime_s // 60) | mins) if device.uptime_s is not none else '-' }}</dd></div>
+    <div><dt>Last restart</dt><dd>{{ (device.boot_reason | replace('_', ' ')) if device.boot_reason else '-' }}</dd></div>
+    <div><dt>Credential</dt><dd>{{ 'Its own token' if device.own_token else 'Shared token' }}</dd></div>
+  </dl>
+</section>
+{% endif %}
+
+<div class="two rev">
+  <section class="panel">
+    <h2>Tank details</h2>
+    <form method="post" action="{{ url_for('web.tank_profile', device_id=tank.device_id) }}" class="form-grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Location <span class="hint">For example, "Block A terrace" or "Panchayat office".</span>
+        <input name="location" value="{{ tank.location or '' }}" maxlength="120"></label>
+      <label>Probe position <span class="hint">Depth, and distance from the inlet and outlet. Readings come from one spot in the tank.</span>
+        <input name="probe_note" value="{{ tank.probe_note or '' }}" maxlength="300"></label>
+      <div><button class="btn small primary">Save details</button></div>
+    </form>
+    <hr>
+    <h3>Export data</h3>
+    <p class="muted">CSV files with raw and calibrated values, for tuning detectors and checking against lab results. Times are UTC.</p>
+    <div class="actions">
+      {% for k, label in [('readings', 'Readings'), ('events', 'Events'), ('labs', 'Lab results'), ('alerts', 'Alerts and feedback')] %}
+      <a class="btn small" href="{{ url_for('web.tank_export', device_id=tank.device_id, kind=k) }}?days=30" download>{{ label }}</a>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="panel" id="public">
+    <h2>Public status page</h2>
+    <p class="muted">A minimal page behind a QR code on the tank. The operator decides what it says: it never shows readings, and it is never updated automatically.</p>
+    <form method="post" action="{{ url_for('web.tank_public', device_id=tank.device_id) }}" class="form-grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label class="switch"><input type="checkbox" name="public_enabled" {{ 'checked' if tank.public_enabled }}><span>Show a public status page for this tank</span></label>
+      <label>Status
+        <select name="public_status">{% for k, v in public_statuses.items() %}<option value="{{ k }}" {{ 'selected' if tank.public_status == k }}>{{ v }}</option>{% endfor %}</select></label>
+      <label>Note for the public <span class="hint">Optional. For example, "Tank cleaned on Monday."</span>
+        <input name="public_note" value="{{ tank.public_note or '' }}" maxlength="240"></label>
+      <div class="actions"><button class="btn small primary">Save</button>
+        {% if tank.public_enabled and public_url %}<a class="btn small" href="{{ url_for('web.tank_qr', device_id=tank.device_id) }}">Print QR code</a>{% endif %}</div>
+    </form>
+    {% if tank.public_enabled and public_url %}
+    <p class="muted" style="margin-top:.9rem">Link: <a href="{{ public_url }}">{{ public_url }}</a></p>
+    {% if tank.public_updated_at %}<p class="muted">Last confirmed {{ tank.public_updated_at | local }}. Pages older than a week tell visitors the status may be out of date.</p>{% endif %}
+    {% endif %}
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script>
-const url = {{ url_for('web.tank_data', device_id=tank.device_id) | tojson }};
-const specs = [
-  {id: 'c-ph', key: 'ph', title: 'pH', color: '#2563eb'},
-  {id: 'c-turb', key: 'turbidity_ntu', title: 'Turbidity (NTU)', color: '#d97706'},
-  {id: 'c-tds', key: 'tds_ppm', title: 'TDS (ppm)', color: '#059669'},
-];
-const charts = {};
-async function load() {
-  const data = await (await fetch(url + '?hours=' + document.getElementById('hours').value)).json();
-  for (const s of specs) {
-    const el = document.getElementById(s.id);
-    const has = data[s.key].some(v => v !== null);
-    el.parentElement.style.display = has ? '' : 'none';
-    if (!has) continue;
-    if (charts[s.id]) charts[s.id].destroy();
-    charts[s.id] = new Chart(el, {
-      type: 'line',
-      data: {labels: data.labels, datasets: [{label: s.title, data: data[s.key], borderColor: s.color,
-             borderWidth: 1.5, pointRadius: 0, spanGaps: true}]},
-      options: {maintainAspectRatio: false, animation: false,
-                plugins: {title: {display: true, text: s.title}, legend: {display: false}},
-                scales: {x: {ticks: {maxTicksLimit: 8}}}}
-    });
+(function () {
+  const url = {{ url_for('web.tank_data', device_id=tank.device_id) | tojson }};
+  const specs = [
+    {id: 'c-ph', key: 'ph', color: '#2f7fd0', dec: 2},
+    {id: 'c-turb', key: 'turbidity_ntu', color: '#d98a1f', dec: 2},
+    {id: 'c-tds', key: 'tds_ppm', color: '#1f9e72', dec: 0},
+  ];
+  const charts = {};
+  let hours = 24;
+  const tf = {timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false};
+  const df = {timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short'};
+  const tick = ms => hours <= 24 ? new Date(ms).toLocaleTimeString('en-GB', tf)
+                                 : new Date(ms).toLocaleDateString('en-GB', df) + ' ' + new Date(ms).toLocaleTimeString('en-GB', tf);
+  const full = ms => new Date(ms).toLocaleDateString('en-GB', df) + ', ' + new Date(ms).toLocaleTimeString('en-GB', tf);
+  const css = getComputedStyle(document.documentElement);
+
+  // vertical markers for logged events (dashed) and lab samples (diamonds)
+  const markers = {
+    id: 'markers',
+    afterDatasetsDraw(chart, _a, opts) {
+      const {ctx, chartArea: a, scales: {x}} = chart;
+      ctx.save();
+      (opts.events || []).forEach(m => {
+        const px = x.getPixelForValue(m.t); if (px < a.left || px > a.right) return;
+        ctx.setLineDash([4, 4]); ctx.strokeStyle = '#55716f'; ctx.lineWidth = 1.25;
+        ctx.beginPath(); ctx.moveTo(px, a.top); ctx.lineTo(px, a.bottom); ctx.stroke();
+        ctx.setLineDash([]); ctx.fillStyle = '#55716f'; ctx.font = '600 11px "Public Sans", system-ui, sans-serif';
+        ctx.textAlign = px > a.right - 70 ? 'right' : 'left'; ctx.fillText(m.kind, px + (px > a.right - 70 ? -4 : 4), a.top + 11);
+      });
+      (opts.labs || []).forEach(m => {
+        const px = x.getPixelForValue(m.t); if (px < a.left || px > a.right) return;
+        ctx.fillStyle = '#062b33'; ctx.beginPath();
+        ctx.moveTo(px, a.bottom - 14); ctx.lineTo(px + 6, a.bottom - 8); ctx.lineTo(px, a.bottom - 2); ctx.lineTo(px - 6, a.bottom - 8); ctx.closePath(); ctx.fill();
+      });
+      ctx.restore();
+    }
+  };
+
+  async function load() {
+    let data;
+    try { data = await (await fetch(url + '?hours=' + hours)).json(); } catch (e) { return; }
+    let any = false;
+    for (const s of specs) {
+      const el = document.getElementById(s.id), block = el.closest('.chart-block');
+      const pts = data.t.map((t, i) => ({x: t, y: data[s.key][i]})).filter(p => p.y !== null);
+      block.style.display = pts.length ? '' : 'none';
+      // tile range text
+      const tile = document.querySelector('.tile[data-metric="' + s.key + '"] .r');
+      if (tile) tile.textContent = pts.length ? 'range ' + Math.min(...pts.map(p => p.y)).toFixed(s.dec) + ' to ' + Math.max(...pts.map(p => p.y)).toFixed(s.dec) + ' (' + (hours >= 72 ? Math.round(hours / 24) + ' d' : hours + ' h') + ')' : '';
+      if (!pts.length) continue;
+      any = true;
+      if (charts[s.id]) charts[s.id].destroy();
+      const g = el.getContext('2d').createLinearGradient(0, 0, 0, 210);
+      g.addColorStop(0, s.color + '33'); g.addColorStop(1, s.color + '00');
+      charts[s.id] = new Chart(el, {
+        type: 'line',
+        data: {datasets: [{data: pts, borderColor: s.color, backgroundColor: g, fill: true, borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: .25, spanGaps: true}]},
+        plugins: [markers],
+        options: {maintainAspectRatio: false, animation: false, interaction: {mode: 'index', intersect: false},
+          plugins: {legend: {display: false}, markers: {events: data.events, labs: data.labs},
+                    tooltip: {callbacks: {title: i => full(i[0].parsed.x), label: c => ' ' + c.parsed.y.toFixed(s.dec)}}},
+          scales: {x: {type: 'linear', min: data.t[0], max: data.t[data.t.length - 1], ticks: {maxTicksLimit: 7, callback: v => tick(v), color: '#55716f'}, grid: {color: '#e3eeeb'}},
+                   y: {ticks: {color: '#55716f'}, grid: {color: '#e3eeeb'}}}}
+      });
+    }
+    document.getElementById('no-data').hidden = any;
   }
-}
-document.getElementById('hours').addEventListener('change', load);
-load();
+  document.querySelectorAll('#range button').forEach(b => b.addEventListener('click', () => {
+    document.querySelectorAll('#range button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    hours = +b.dataset.h; load();
+  }));
+  const rb = document.getElementById('rename-btn'), rf = document.getElementById('rename');
+  rb.addEventListener('click', () => { const o = rf.classList.toggle('open'); rb.setAttribute('aria-expanded', String(o)); if (o) rf.querySelector('input').focus(); });
+  load();
+})();
 </script>
 {% endblock %}

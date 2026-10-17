@@ -1,0 +1,39 @@
+{% extends "app_base.html" %}
+{% from "_macros.html" import icon %}
+{% block title %}Devices · StillWatch{% endblock %}
+{% block content %}
+<header class="page-head">
+  <div>
+    <h1>Devices</h1>
+    <p class="muted">Each tank node reports in on its own. A node that has not been heard from for {{ silent_min }} minutes raises a "device offline" alert. That alert is about the device, not the water.</p>
+  </div>
+</header>
+
+{% for d in devices %}
+<section class="panel" id="d-{{ d.device_id }}">
+  <div class="panel-head"><h2><a href="{{ url_for('web.tank', device_id=d.device_id) }}">{{ d.name }}</a> <small class="muted">{{ d.device_id }}</small></h2>
+    {% if d.revoked %}<span class="badge red">Token revoked</span>
+    {% elif d.last_seen_at is none %}<span class="badge">Never heard from</span>
+    {% else %}<span class="badge">Last contact {{ d.last_seen_at | ago }}</span>{% endif %}</div>
+  <dl class="kv">
+    <div><dt>Firmware</dt><dd>{{ d.fw or '-' }}{% if d.target_fw and d.target_fw != d.fw %} <span class="muted">(update to {{ d.target_fw }} pending)</span>{% endif %}</dd></div>
+    <div><dt>WiFi signal</dt><dd>{{ (d.rssi ~ ' dBm') if d.rssi is not none else '-' }}</dd></div>
+    <div><dt>Unsent in flash</dt><dd>{{ d.queued if d.queued is not none else '-' }}</dd></div>
+    <div><dt>Last restart</dt><dd>{{ (d.boot_reason | replace('_', ' ')) if d.boot_reason else '-' }}</dd></div>
+    <div><dt>Sensor faults</dt><dd>{{ d.faults | join(', ') if d.faults else 'none reported' }}</dd></div>
+    <div><dt>Credential</dt><dd>{{ 'Its own token' if d.own_token else 'Shared token' }}</dd></div>
+  </dl>
+  <form method="post" action="{{ url_for('web.device_settings', device_id=d.device_id) }}" class="form-grid cols2 settings">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Read sensors every (seconds) <span class="hint">Blank = default ({{ defaults.read_period_s }}).</span>
+      <input name="read_period_s" inputmode="numeric" value="{{ d.settings.read_period_s if d.settings and d.settings.read_period_s else '' }}"></label>
+    <label>Upload every (seconds) <span class="hint">Blank = default ({{ defaults.send_period_s }}).</span>
+      <input name="send_period_s" inputmode="numeric" value="{{ d.settings.send_period_s if d.settings and d.settings.send_period_s else '' }}"></label>
+    <div><button class="btn small primary">Save</button></div>
+  </form>
+</section>
+{% else %}
+<div class="empty">{{ icon('chip') }}<h2>No devices yet</h2>
+  <p>Create a token for a node with <code>python -m flask --app app register-device tank-01</code>, put it in the node's <code>secrets.h</code>, and it will appear here after its first upload.</p></div>
+{% endfor %}
+{% endblock %}

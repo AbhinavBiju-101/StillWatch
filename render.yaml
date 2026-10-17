@@ -19,6 +19,12 @@ services:
         sync: false
       - key: DEVICE_TOKEN
         sync: false
+      - key: ALLOW_SHARED_DEVICE_TOKEN
+        value: "1"        # set to 0 once every node has its own token (flask register-device)
+      - key: SWEEP_TOKEN
+        sync: false
+      - key: DEVICE_SILENT_MIN
+        value: "30"
       - key: DEMO_PASSWORD
         sync: false
       - key: TESTING_PASSWORD

@@ -4,37 +4,60 @@ import statistics
 import threading
 from datetime import datetime, timedelta, timezone
 
-from . import calibration, db, detectors, llm, schema, simulator
+from . import calibration, db, detectors, devices, features, llm, schema, simulator
 
 log = logging.getLogger(__name__)
 READING_COLS = ("ph", "ph_raw_mv", "turbidity_ntu", "turbidity_raw_mv",
-                "tds_ppm", "temp_c", "orp_mv", "fw")
+                "tds_ppm", "tds_raw_mv", "temp_c", "orp_mv", "orp_raw_mv", "fw")
 _RANK = {"yellow": 1, "red": 2}
 OFFLINE_AFTER = timedelta(minutes=30)
 
 
 # ---------------------------------------------------------------- ingestion
 
-def ingest(conn, clean, cooldown_min):
-    """Store one reading (idempotent) and run detection.
-    Returns {"inserted": bool, "alert_id": int|None, "context": dict|None}."""
-    device_id = clean["device_id"]
+def _ensure_pilot_tank(conn, device_id):
     db.run(conn, "insert into tanks (device_id, name, dataset) values (%s, %s, 'pilot') "
                  "on conflict (device_id) do nothing", (device_id, device_id))
     tank = db.one(conn, "select dataset from tanks where device_id = %s", (device_id,))
     if tank["dataset"] != "pilot":
         raise ValueError("device_id belongs to a demo tank")
 
+
+def _store(conn, clean):
+    """Insert one reading. False when (device_id, ts) already exists, which makes retries harmless."""
     cols = ", ".join(READING_COLS)
     marks = ", ".join(["%s"] * (len(READING_COLS) + 2))
     row = db.one(conn,
                  f"insert into readings (device_id, ts, {cols}) values ({marks}) "
                  "on conflict (device_id, ts) do nothing returning id",
-                 (device_id, clean["ts"], *[clean.get(c) for c in READING_COLS]))
-    if row is None:
+                 (clean["device_id"], clean["ts"], *[clean.get(c) for c in READING_COLS]))
+    return row is not None
+
+
+def ingest(conn, clean, cooldown_min):
+    """Store one reading (idempotent) and run detection.
+    Returns {"inserted": bool, "alert_id": int|None, "context": dict|None}."""
+    device_id = clean["device_id"]
+    _ensure_pilot_tank(conn, device_id)
+    inserted = _store(conn, clean)
+    devices.touch(conn, device_id, {**clean.get("telemetry", {}), "fw": clean.get("fw")})
+    if not inserted:
         return {"inserted": False, "alert_id": None, "context": None}
     alert_id, context = run_analysis(conn, device_id, cooldown_min)
     return {"inserted": True, "alert_id": alert_id, "context": context}
+
+
+def ingest_batch(conn, device_id, cleans, telemetry, cooldown_min):
+    """Store a backlog from the node's flash queue. Detection runs once, after the whole batch,
+    so uploading 200 old readings costs one analysis, not 200.
+    Returns {"stored": int, "duplicates": int, "alert_id": int|None, "context": dict|None}."""
+    _ensure_pilot_tank(conn, device_id)
+    stored = sum(_store(conn, c) for c in cleans)
+    devices.touch(conn, device_id, telemetry)
+    alert_id = context = None
+    if stored:
+        alert_id, context = run_analysis(conn, device_id, cooldown_min)
+    return {"stored": stored, "duplicates": len(cleans) - stored, "alert_id": alert_id, "context": context}
 
 
 # ----------------------------------------------------------------- analysis
@@ -58,25 +81,54 @@ def load_series(conn, device_id):
 
 
 def build_context(conn, device_id, findings, series):
-    tank = db.one(conn, "select name from tanks where device_id = %s", (device_id,))
+    """Everything the LLM is allowed to know: the detectors' findings plus the tank's own history.
+    "Memory" in the outline is just the events log and past alerts with their outcomes."""
+    tank = db.one(conn, "select name, location, probe_note from tanks where device_id = %s", (device_id,))
     events = db.all(conn, "select ts, kind, note from events where device_id = %s "
                           "and ts > now() - interval '48 hours' order by ts desc limit 5", (device_id,))
-    lab = db.one(conn, "select collected_at, ph, turbidity_ntu, tds_ppm, bacteria from lab_results "
-                       "where device_id = %s order by collected_at desc limit 1", (device_id,))
+    lab = db.one(conn, "select id, collected_at, ph, turbidity_ntu, tds_ppm, bacteria, sample_location "
+                       "from lab_results where device_id = %s order by collected_at desc limit 1", (device_id,))
+    lab_values = db.all(conn, "select parameter, qualifier, value, unit from lab_values where lab_result_id = %s "
+                              "order by parameter", (lab["id"],)) if lab else []
+    past = db.all(conn, "select created_at, severity, status, feedback, findings from alerts "
+                        "where device_id = %s and kind = 'water' and created_at > now() - interval '90 days' "
+                        "order by created_at desc offset 1 limit 5", (device_id,))
+    dev = db.one(conn, "select faults, fw from devices where device_id = %s", (device_id,))
+
     latest, usual = {}, {}
     for m, pts in series.items():
         if pts:
             vals = [v for _, v in pts]
             latest[m] = round(vals[-1], 2)
             usual[m] = round(statistics.median(vals[:-detectors.RECENT_N] or vals), 2)
+
+    derived = []
+    for metric in ("turbidity_ntu", "tds_ppm", "ph"):
+        r = features.summarize(series.get(metric, []), metric)
+        if r:
+            derived.append({"metric": metric, "usual": round(r["baseline"], 2), "peak": round(r["peak"], 2),
+                            "minutes_since_it_began": round((series[metric][-1][0] - r["start_t"]) / 60),
+                            "back_to_usual": r["recovered"], "half_life_minutes": r["half_life_minutes"]})
+    if lab:
+        lab = {k: v for k, v in dict(lab).items() if k != "id"}
+        lab["values"] = [dict(v) for v in lab_values]
     return {
         "tank": tank["name"] if tank else device_id,
+        "location": tank["location"] if tank else None,
+        "probe_position": tank["probe_note"] if tank else None,
         "findings": [f.as_dict() for f in findings],
         "latest_values": latest,
         "usual_values_for_this_tank": usual,
         "events_logged_last_48h": [{"when": str(e["ts"]), "kind": e["kind"], "note": e["note"]} for e in events],
         "refill_logged_last_48h": any(e["kind"] == "refill" for e in events),
-        "latest_lab_result": dict(lab) if lab else None,
+        "latest_lab_result": lab,
+        "earlier_alerts_and_outcomes": [
+            {"when": str(a["created_at"]), "severity": a["severity"],
+             "outcome": a["feedback"] or ("still open" if a["status"] == "open" else "closed without feedback"),
+             "metrics": sorted({f.get("metric") for f in (a["findings"] or []) if f.get("metric")})}
+            for a in past],
+        "how_the_change_has_played_out_experimental": derived,
+        "sensors_reported_faulty": (dev or {}).get("faults") or [],
     }
 
 
@@ -89,7 +141,7 @@ def run_analysis(conn, device_id, cooldown_min):
         return None, None
 
     open_alerts = db.all(conn, """
-        select severity from alerts where device_id = %s and status = 'open'
+        select severity from alerts where device_id = %s and status = 'open' and kind = 'water'
         and created_at > now() - make_interval(mins => %s)""", (device_id, cooldown_min))
     if any(_RANK[a["severity"]] >= _RANK[sev] for a in open_alerts):
         return None, None                       # already alerted at this level or higher
@@ -114,6 +166,75 @@ def start_interpretation(cfg, alert_id, context):
     threading.Thread(target=work, daemon=True).start()
 
 
+# ------------------------------------------------------------------- devices
+
+def device_silent_message(name, minutes):
+    return (f"No data from {name} for {_dur(minutes)}. Check the device's power and WiFi, and that the "
+            "probes are still in the water. This is about the device, not the water quality.")
+
+
+def _dur(minutes):
+    minutes = int(minutes)
+    if minutes < 60:
+        return f"{minutes} min"
+    h, m = divmod(minutes, 60)
+    return f"{h} h {m:02d} min" if m else f"{h} h"
+
+
+def sweep_devices(conn, silent_min):
+    """Open a "device offline" alert for every pilot node that has gone quiet and has none open.
+    Returns [alert_id, ...] for the alerts it created. Safe to run as often as you like."""
+    from psycopg.types.json import Jsonb
+    rows = db.all(conn, """
+        select d.device_id, t.name,
+               (extract(epoch from now() - d.last_seen_at) / 60)::int as silent_min
+        from devices d join tanks t using (device_id)
+        where t.dataset = 'pilot' and not d.revoked and d.last_seen_at is not null
+          and d.last_seen_at < now() - make_interval(mins => %s)
+          and not exists (select 1 from alerts a where a.device_id = d.device_id
+                          and a.kind = 'device' and a.status = 'open')""", (silent_min,))
+    ids = []
+    for r in rows:
+        a = db.one(conn, "insert into alerts (device_id, kind, severity, findings, message) "
+                         "values (%s, 'device', 'yellow', %s, %s) returning id",
+                   (r["device_id"], Jsonb([{"metric": "device", "detector": "silent",
+                                            "score": r["silent_min"],
+                                            "detail": f"no contact for {_dur(r['silent_min'])}"}]),
+                    device_silent_message(r["name"], r["silent_min"])))
+        ids.append(a["id"])
+    return ids
+
+
+_last_sweep = [0.0]
+
+
+def maybe_sweep(cfg, every_s=300):
+    """Cheap opportunistic sweep for hosts with no scheduler: runs at most once per `every_s` per
+    process, triggered by dashboard traffic. A real scheduler (cron, POST /api/sweep) is still better."""
+    import time
+    from . import notify
+    if time.time() - _last_sweep[0] < every_s:
+        return []
+    _last_sweep[0] = time.time()
+    with db.connection() as conn:
+        ids = sweep_devices(conn, cfg["DEVICE_SILENT_MIN"])
+    for alert_id in ids:
+        notify.start_notifications(dict(cfg), alert_id)
+    return ids
+
+
+def tank_status(dataset, last_ts, open_severity, now=None):
+    """green / yellow / red / waiting / offline. One definition shared by the list and detail pages."""
+    now = now or datetime.now(timezone.utc)
+    if open_severity:
+        return open_severity
+    if last_ts is None:
+        return "waiting"
+    if dataset == "pilot" and now - last_ts > OFFLINE_AFTER:
+        return "offline"
+    return "green"
+
+
 # ------------------------------------------------------------------- views
 
 def tank_overview(conn, dataset):
@@ -124,20 +245,27 @@ def tank_overview(conn, dataset):
         left join lateral (select * from readings r where r.device_id = t.device_id
                            order by ts desc limit 1) lr on true
         left join lateral (select severity from alerts a where a.device_id = t.device_id
-                           and a.status = 'open'
+                           and a.status = 'open' and a.kind = 'water'
                            order by (severity = 'red') desc, created_at desc limit 1) al on true
         where t.dataset = %s order by t.name""", (dataset,))
-    now = datetime.now(timezone.utc)
     for r in rows:
-        if r["open_severity"]:
-            r["status"] = r["open_severity"]
-        elif r["last_ts"] is None:
-            r["status"] = "waiting"
-        elif dataset == "pilot" and now - r["last_ts"] > OFFLINE_AFTER:
-            r["status"] = "offline"
-        else:
-            r["status"] = "green"
+        r["status"] = tank_status(dataset, r["last_ts"], r["open_severity"])
     return rows
+
+
+def tank_sparks(conn, dataset):
+    """Last 24 h of turbidity per tank in 30-minute buckets: {device_id: [values]}, for the overview sparklines."""
+    rows = db.all(conn, """
+        select r.device_id, date_bin(interval '30 minutes', r.ts, timestamptz '2000-01-01') as b,
+               avg(r.turbidity_ntu) as v
+        from readings r join tanks t on t.device_id = r.device_id
+        where t.dataset = %s and r.ts > now() - interval '24 hours'
+        group by r.device_id, b order by r.device_id, b""", (dataset,))
+    out = {}
+    for r in rows:
+        if r["v"] is not None:
+            out.setdefault(r["device_id"], []).append(round(float(r["v"]), 2))
+    return out
 
 
 # -------------------------------------------------------------------- demo
@@ -188,11 +316,16 @@ def ensure_demo_fresh(conn, max_age_hours, cooldown_min=180):
 
 # ------------------------------------------------------------- calibration
 
-def add_ph_calibration(conn, device_id, mv_ph4, mv_ph7, valid_from):
-    """Store a two-point pH calibration. Raises ValueError if the points are unusable."""
+def add_ph_calibration(conn, device_id, mv_ph4, mv_ph7, valid_from, buffer_temp_c=None):
+    """Store a two-point pH calibration. `buffer_temp_c` (temperature of the buffers) switches on
+    temperature compensation for readings that carry a temperature. Raises ValueError if unusable."""
     from psycopg.types.json import Jsonb
     params = calibration.ph_two_point(mv_ph4, mv_ph7)
     params.update({"mv_ph4": mv_ph4, "mv_ph7": mv_ph7})
+    if buffer_temp_c is not None:
+        if not -5 <= buffer_temp_c <= 60:
+            raise ValueError("buffer temperature must be between -5 and 60 C")
+        params["cal_temp_c"] = buffer_temp_c
     db.run(conn, "insert into calibrations (device_id, sensor, method, params, valid_from) "
                  "values (%s, 'ph', 'two_point', %s, %s)", (device_id, Jsonb(params), valid_from))
     return params
@@ -205,9 +338,17 @@ def recompute_ph(conn, device_id):
                         "and sensor = 'ph' and method = 'two_point'", (device_id,))
     total = 0
     for start, end, p in calibration.intervals(cals):
-        sql = ("update readings set ph = least(14, greatest(0, %s * ph_raw_mv + %s)) "
+        cal_t = p.get("cal_temp_c")
+        if cal_t is None:
+            expr, args = "%s * ph_raw_mv + %s", [p["slope"], p["offset"]]
+        else:     # same formula as calibration.ph_from_mv, in SQL, for readings that have a temperature
+            mv7 = (7.0 - p["offset"]) / p["slope"]
+            expr = ("case when temp_c is null then %s * ph_raw_mv + %s "
+                    "else 7 + %s * (ph_raw_mv - %s) * (%s + 273.15) / (temp_c + 273.15) end")
+            args = [p["slope"], p["offset"], p["slope"], mv7, cal_t]
+        sql = (f"update readings set ph = least(14, greatest(0, {expr})) "
                "where device_id = %s and ph_raw_mv is not null and ts >= %s")
-        args = [p["slope"], p["offset"], device_id, start]
+        args += [device_id, start]
         if end is not None:
             sql += " and ts < %s"
             args.append(end)

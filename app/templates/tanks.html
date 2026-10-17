@@ -1,22 +1,72 @@
-{% extends "base.html" %}
-{% from "_macros.html" import badge, fmt %}
+{% extends "app_base.html" %}
+{% from "_macros.html" import short_badge, badge, kind_badge, fmt, icon %}
+{% block title %}Tanks · StillWatch{% endblock %}
 {% block content %}
-<h1>Tanks</h1>
-{% if not tanks %}
-  <p class="muted">No tanks yet. A tank appears here as soon as its device sends a first reading.</p>
+{% set attention = tanks | selectattr('status', 'in', ['yellow', 'red']) | list %}
+{% set last = tanks | map(attribute='last_ts') | select | list %}
+<header class="page-head">
+  <div>
+    <h1>Tanks</h1>
+    <p class="muted">{{ 'Simulated tanks, regenerated regularly so the demo always looks live.' if session['dataset'] == 'demo' else 'Pilot tanks reporting from real devices.' }}</p>
+  </div>
+  <div class="actions">
+    <a class="btn small" href="{{ url_for('web.events') }}">Log an event</a>
+    <a class="btn small" href="{{ url_for('web.labs') }}">Add a lab result</a>
+  </div>
+</header>
+
+{% if tanks %}
+<section class="summary" aria-label="Summary">
+  <div class="stat"><span class="k">Tanks</span><span class="v">{{ tanks | length }}</span></div>
+  <div class="stat {{ 'hot' if attention else 'calm' }}"><span class="k">Need attention</span><span class="v">{{ attention | length }}</span></div>
+  <div class="stat"><span class="k">Open alerts</span><span class="v">{{ open_alerts | length }}{% if open_alerts | length >= 5 %}<small>or more</small>{% endif %}</span></div>
+  <div class="stat"><span class="k">Latest reading</span><span class="v" style="font-size:1.3rem">{{ (last | max) | ago if last else 'none yet' }}</span></div>
+</section>
+
+{% if open_alerts %}
+<section class="panel attention {{ 'red' if open_alerts | selectattr('severity', 'equalto', 'red') | list else 'yellow' }}">
+  <div class="panel-head"><h2>Needs a look</h2><a href="{{ url_for('web.alerts') }}">All alerts</a></div>
+  {% for a in open_alerts %}
+  <div class="att-row">
+    <div>
+      <b><a href="{{ url_for('web.tank', device_id=a.device_id) }}">{{ a.name }}</a></b> &nbsp;{{ kind_badge(a) }}
+      <span class="alert-time">&nbsp; {{ a.created_at | ago }}</span>
+      <p>{{ a.message }}</p>
+    </div>
+    <form method="post" action="{{ url_for('web.alert_feedback', alert_id=a.id) }}" class="fb">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      {% if a.kind == 'device' %}<button class="btn small" name="feedback" value="dismiss">Dismiss</button>{% else %}<button class="btn small primary" name="feedback" value="confirmed">Real problem</button>
+      <button class="btn small" name="feedback" value="false_alarm">False alarm</button>{% endif %}
+    </form>
+  </div>
+  {% endfor %}
+</section>
 {% endif %}
-<div class="grid">
+
+<section class="tank-grid" aria-label="Tanks">
 {% for t in tanks %}
-  <a class="card tank {{ t.status }}" href="{{ url_for('web.tank', device_id=t.device_id) }}">
-    <h2>{{ t.name }}</h2>
-    {{ badge(t.status) }}
-    <dl>
+  <a class="tank-card {{ t.status }}" href="{{ url_for('web.tank', device_id=t.device_id) }}">
+    <div>
+      {{ short_badge(t.status) }}
+      <h2>{{ t.name }}</h2>
+    </div>
+    <dl class="tc-metrics">
       <div><dt>pH</dt><dd>{{ fmt(t.ph) }}</dd></div>
-      <div><dt>Turbidity</dt><dd>{{ fmt(t.turbidity_ntu, ' NTU') }}</dd></div>
-      <div><dt>TDS</dt><dd>{{ fmt(t.tds_ppm, ' ppm') }}</dd></div>
+      <div><dt>Turbidity</dt><dd>{{ fmt(t.turbidity_ntu) }}<small>NTU</small></dd></div>
+      <div><dt>TDS</dt><dd>{{ '%.0f'|format(t.tds_ppm) if t.tds_ppm is not none else '-' }}<small>ppm</small></dd></div>
     </dl>
-    <p class="muted">Last reading {{ t.last_ts | ago }}</p>
+    {% if t.spark and t.spark | length > 2 %}
+    <svg class="tc-spark" viewBox="0 0 100 44" preserveAspectRatio="none" role="img" aria-label="Turbidity over the last 24 hours" data-spark="{{ t.spark | join(',') }}"><path class="area"/><path class="ln"/></svg>
+    {% else %}<div class="tc-spark"></div>{% endif %}
+    <div class="tc-foot"><span>Last reading {{ t.last_ts | ago }}</span><span>Open {{ icon('arrow') }}</span></div>
   </a>
 {% endfor %}
+</section>
+{% else %}
+<div class="empty">
+  {{ icon('tank') }}
+  <h2>No tanks yet</h2>
+  <p>A tank appears here as soon as its device sends a first reading. To try it without hardware, run <code>tools/fake_device.py</code> or open the demo account.</p>
 </div>
+{% endif %}
 {% endblock %}

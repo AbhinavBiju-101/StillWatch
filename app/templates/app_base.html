@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon %}
+{% block styles %}<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">{% endblock %}
+{% block bodyclass %}app{% endblock %}
+{% block body %}
+{% set ep = request.endpoint or '' %}
+<div class="shell">
+  <aside class="side">
+    <a class="brand" href="{{ url_for('web.tanks') }}">
+      <img src="{{ url_for('static', filename='favicon.svg') }}" alt="" width="30" height="30"><span>StillWatch</span>
+    </a>
+    <nav aria-label="Main">
+      <a href="{{ url_for('web.tanks') }}" {% if ep in ('web.tanks', 'web.tank', 'web.tank_calibration') %}aria-current="page"{% endif %}>{{ icon('tank') }}<span>Tanks</span></a>
+      <a href="{{ url_for('web.alerts') }}" {% if ep == 'web.alerts' %}aria-current="page"{% endif %}>{{ icon('bell') }}<span>Alerts</span></a>
+      <a href="{{ url_for('web.events') }}" {% if ep == 'web.events' %}aria-current="page"{% endif %}>{{ icon('log') }}<span>Events</span></a>
+      <a href="{{ url_for('web.labs') }}" {% if ep == 'web.labs' %}aria-current="page"{% endif %}>{{ icon('flask') }}<span>Lab results</span></a>
+      {% if session['dataset'] == 'pilot' %}<a href="{{ url_for('web.devices_page') }}" {% if ep in ('web.devices_page', 'web.device_settings') %}aria-current="page"{% endif %}>{{ icon('chip') }}<span>Devices</span></a>{% endif %}
+    </nav>
+    <div class="side-foot">
+      <p class="dataset">
+        <span class="dataset-dot {{ 'sim' if session['dataset'] == 'demo' else 'live' }}"></span>
+        {{ 'Demo: simulated tanks' if session['dataset'] == 'demo' else 'Testing: pilot data' }}
+      </p>
+      <a class="side-link" href="{{ url_for('web.landing') }}">{{ icon('home') }}<span>Overview deck</span></a>
+      <form method="post" action="{{ url_for('web.logout') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="side-link">{{ icon('out') }}<span>Log out</span></button>
+      </form>
+    </div>
+  </aside>
+  <div class="content">
+    <header class="topbar">
+      <a class="brand" href="{{ url_for('web.tanks') }}"><img src="{{ url_for('static', filename='favicon.svg') }}" alt="" width="26" height="26"><span>StillWatch</span></a>
+      <span class="dataset"><span class="dataset-dot {{ 'sim' if session['dataset'] == 'demo' else 'live' }}"></span>{{ 'Demo' if session['dataset'] == 'demo' else 'Testing' }}</span>
+      <form method="post" action="{{ url_for('web.logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button>Log out</button></form>
+    </header>
+    <main>
+      {% for m in get_flashed_messages() %}<div class="flash" role="status">{{ m }}</div>{% endfor %}
+      {% block content %}{% endblock %}
+    </main>
+    <footer class="app-foot">StillWatch detects unusual change in proxy readings (pH, TDS, turbidity). It does not certify water safety. Confirm with a lab test.</footer>
+  </div>
+</div>
+<script src="{{ url_for('static', filename='app.js') }}" defer></script>
+{% endblock %}

@@ -1,26 +1,80 @@
-{% extends "base.html" %}
-{% block title %}Lab results{% endblock %}
+{% extends "app_base.html" %}
+{% from "_macros.html" import icon %}
+{% block title %}Lab results · StillWatch{% endblock %}
 {% block content %}
-<h1>Lab results</h1>
-<p class="muted">Enter results from a sample sent to a lab. They are matched to the sensor timeline by collection time and used to tune alerts.</p>
-<section class="card">
-  <form method="post" class="stack">
+<header class="page-head">
+  <div>
+    <h1>Lab results</h1>
+    <p class="muted">Enter results from a sample sent to a lab, one row per measured parameter. They are matched to the sensor timeline by collection time and show up as markers on the tank's charts.</p>
+  </div>
+</header>
+
+<section class="panel">
+  <h2>Add a result</h2>
+  <form method="post" enctype="multipart/form-data" class="form-grid" id="lab-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <label>Tank <select name="device_id" required>{% for t in tanks %}<option value="{{ t.device_id }}">{{ t.name }}</option>{% endfor %}</select></label>
-    <label>Sample collected (India time, blank = now) <input type="datetime-local" name="collected_at"></label>
-    <label>pH <input name="ph" inputmode="decimal"></label>
-    <label>Turbidity (NTU) <input name="turbidity_ntu" inputmode="decimal"></label>
-    <label>TDS (ppm) <input name="tds_ppm" inputmode="decimal"></label>
-    <label>Bacterial test <select name="bacteria">{% for b in bacteria %}<option value="{{ b }}">{{ b | replace('_', ' ') }}</option>{% endfor %}</select></label>
-    <label>Note <input name="note" maxlength="500"></label>
-    <button>Save lab result</button>
+    <div class="form-grid cols2">
+      <label>Tank
+        <select name="device_id" required>{% for t in tanks %}<option value="{{ t.device_id }}" {{ 'selected' if t.device_id == selected }}>{{ t.name }}</option>{% endfor %}</select>
+      </label>
+      <label>Sample collected <span class="hint">India time. Leave blank for now. Use the collection time, not the report date.</span>
+        <input type="datetime-local" name="collected_at">
+      </label>
+      <label>Lab name <span class="hint">Optional.</span><input name="lab_name" maxlength="120"></label>
+      <label>Where in the tank <span class="hint">For example "outlet tap" or "mid-depth, near the probe".</span><input name="sample_location" maxlength="120"></label>
+    </div>
+
+    <fieldset class="params">
+      <legend>Results <span class="hint">Type a number, or <code>&lt;1</code>, <code>&gt;10</code>, <code>absent</code>, <code>present</code>. Leave a row empty if it was not measured.</span></legend>
+      <div id="param-rows">
+        {% for slug in default_rows %}
+        <div class="param-row">
+          <label>{{ catalog[slug][0] }}<input type="hidden" name="parameter" value="{{ slug }}"><input name="reading" autocomplete="off"></label>
+          <label>Unit<input name="unit" value="{{ catalog[slug][1] }}" maxlength="24"></label>
+        </div>
+        {% endfor %}
+      </div>
+      <button type="button" class="btn small" id="add-param">Add another parameter</button>
+      <datalist id="param-list">{% for slug, v in catalog.items() %}<option value="{{ slug }}" label="{{ v[0] }}" data-unit="{{ v[1] }}">{% endfor %}</datalist>
+      <template id="param-row-tpl">
+        <div class="param-row">
+          <label>Parameter<input name="parameter" list="param-list" placeholder="e.g. fluoride" maxlength="40" autocomplete="off"><input name="reading" placeholder="value" autocomplete="off" style="margin-top:.4rem"></label>
+          <label>Unit<input name="unit" maxlength="24"></label>
+        </div>
+      </template>
+    </fieldset>
+
+    <label>Lab report <span class="hint">Optional. PDF, PNG or JPEG, up to 5 MB.</span>
+      <input type="file" name="report" accept="application/pdf,image/png,image/jpeg">
+    </label>
+    <label>Note <span class="hint">Optional. Anything unusual about the sample.</span>
+      <input name="note" maxlength="500">
+    </label>
+    <div><button class="btn primary">Save lab result</button></div>
   </form>
 </section>
-<section class="card">
-  {% for l in labs %}<p>{{ l.collected_at | local }} · {{ l.name }} · pH {{ l.ph if l.ph is not none else '-' }},
-    turbidity {{ l.turbidity_ntu if l.turbidity_ntu is not none else '-' }} NTU,
-    TDS {{ l.tds_ppm if l.tds_ppm is not none else '-' }} ppm · bacteria: {{ l.bacteria | replace('_', ' ') }}
-    {% if l.note %}· {{ l.note }}{% endif %}</p>
-  {% else %}<p class="muted">No lab results yet.</p>{% endfor %}
+
+<section class="panel">
+  <div class="panel-head"><h2>Recent results</h2>
+    <a href="{{ url_for('web.export_training') }}" download>Download paired dataset (CSV)</a></div>
+  {% if labs %}
+  <div class="table-wrap">
+    <table class="data">
+      <thead><tr><th>Collected</th><th>Tank</th><th>Results</th><th>Lab / location</th><th>Report</th></tr></thead>
+      <tbody>
+      {% for l in labs %}
+        <tr><td>{{ l.collected_at | local }}</td><td>{{ l.name }}</td>
+          <td>{% if l['values'] %}{% for v in l['values'] %}<span class="tag {{ v.qualifier if v.qualifier in ('absent', 'present') }}">{{ v.parameter | replace('_', ' ') }}: {% if v.qualifier in ('absent', 'present') %}{{ v.qualifier }}{% else %}{{ '' if v.qualifier == '=' else v.qualifier }}{{ '%g' | format(v.value) }}{% if v.unit %} {{ v.unit }}{% endif %}{% endif %}</span> {% endfor %}
+            {% else %}pH {{ l.ph if l.ph is not none else '-' }}, {{ l.turbidity_ntu if l.turbidity_ntu is not none else '-' }} NTU, {{ l.tds_ppm if l.tds_ppm is not none else '-' }} ppm, bacteria {{ l.bacteria | replace('_', ' ') }}{% endif %}
+            {% if l.note %}<div class="muted">{{ l.note }}</div>{% endif %}</td>
+          <td>{{ l.lab_name or '' }}{% if l.sample_location %}<div class="muted">{{ l.sample_location }}</div>{% endif %}</td>
+          <td>{% for f in l.files %}<a href="{{ url_for('web.lab_file', file_id=f.id) }}">{{ f.filename }}</a>{% endfor %}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty" style="border:0;background:none">{{ icon('flask') }}<h2>No lab results yet</h2><p>Add one after a lab test. Matching lab results to sensor readings is how StillWatch learns which patterns mean trouble.</p></div>
+  {% endif %}
 </section>
 {% endblock %}

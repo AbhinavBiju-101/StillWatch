@@ -1,0 +1,71 @@
+{% extends "app_base.html" %}
+{% from "_macros.html" import icon %}
+{% block title %}SMS and WhatsApp · StillWatch{% endblock %}
+{% block content %}
+{% set demo = session['dataset'] == 'demo' %}
+<a class="crumb" href="{{ url_for('web.alerts') }}">&larr; Alerts</a>
+<header class="page-head">
+  <div>
+    <h1>SMS and WhatsApp</h1>
+    <p class="muted">Alerts go to the people responsible for a tank, even if they never open the dashboard. Messages only ever say that an unusual change was detected and a test is recommended.</p>
+  </div>
+</header>
+
+{% if demo %}
+<div class="flash">Simulated tanks never send messages. Sign in with the testing account to set up contacts for pilot tanks.</div>
+{% elif not provider_ready %}
+<div class="flash">Sending is switched off. Set <code>NOTIFY_PROVIDER=twilio</code> and the Twilio values in your environment to turn it on. Contacts you add now are kept until then.</div>
+{% endif %}
+
+<div class="two rev">
+  <section class="panel">
+    <h2>Add a contact</h2>
+    <form method="post" class="form-grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Name <input name="name" maxlength="80" required {{ 'disabled' if demo }}></label>
+      <label>Phone number <span class="hint">With country code, like +919876543210.</span>
+        <input name="phone" inputmode="tel" autocomplete="off" placeholder="+91" required {{ 'disabled' if demo }}></label>
+      <fieldset>
+        <legend>Send through</legend>
+        <div class="kinds">
+          <label class="kind"><input type="radio" name="channel" value="whatsapp" checked><span>WhatsApp</span></label>
+          <label class="kind"><input type="radio" name="channel" value="sms"><span>SMS</span></label>
+        </div>
+      </fieldset>
+      <label>Send when
+        <select name="min_severity" {{ 'disabled' if demo }}>
+          <option value="yellow">Any unusual change</option>
+          <option value="red">Only large or multi-signal changes</option>
+        </select></label>
+      <div><button class="btn primary" {{ 'disabled' if demo }}>Add contact</button></div>
+    </form>
+  </section>
+
+  <div>
+    <section class="panel">
+      <h2>Contacts</h2>
+      {% for c in contacts %}
+      <div class="contact">
+        <div><b>{{ c.name }}</b><div class="muted">{{ 'WhatsApp' if c.channel == 'whatsapp' else 'SMS' }} · {{ c.phone }} · {{ 'any change' if c.min_severity == 'yellow' else 'large changes only' }}</div></div>
+        <div class="actions">
+          <form method="post" action="{{ url_for('web.contact_test', contact_id=c.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn small" {{ 'disabled' if demo or not provider_ready }}>Send test</button></form>
+          <form method="post" action="{{ url_for('web.contact_delete', contact_id=c.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="btn small danger">Remove</button></form>
+        </div>
+      </div>
+      {% else %}
+      <p class="muted">No contacts yet. Add the warden, operator or supplier who should hear first.</p>
+      {% endfor %}
+    </section>
+    {% if recent %}
+    <section class="panel">
+      <h2>Recent messages</h2>
+      <div class="table-wrap"><table class="data">
+        <thead><tr><th>When</th><th>To</th><th>Tank</th><th>Result</th></tr></thead>
+        <tbody>{% for n in recent %}<tr><td>{{ n.created_at | local }}</td><td>{{ n.contact or 'removed contact' }}</td><td>{{ n.tank or '-' }}</td>
+          <td><span class="tag {{ 'absent' if n.status == 'sent' else 'present' }}">{{ n.status }}</span>{% if n.status == 'failed' and n.detail %} <span class="muted">{{ n.detail }}</span>{% endif %}</td></tr>{% endfor %}</tbody>
+      </table></div>
+    </section>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

@@ -1,19 +1,59 @@
 {% extends "base.html" %}
 {% from "_macros.html" import quick_buttons %}
-{% block title %}Sign in{% endblock %}
-{% block content %}
-<section class="card narrow">
-  <h1>Sign in</h1>
-  <form method="post">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <label>Username <input name="username" value="{{ prefill }}" autocomplete="username" required {% if not prefill %}autofocus{% endif %}></label>
-    <label>Password <input name="password" type="password" autocomplete="current-password" required {% if prefill %}autofocus{% endif %}></label>
-    <button>Sign in</button>
-  </form>
-  <p class="muted">Accounts: <b>demo</b> (simulated data) and <b>testing</b> (pilot data).</p>
-  <hr>
-  <p class="muted">Or skip the password:</p>
-  {{ quick_buttons(quick_demo, quick_testing) }}
-  <p class="muted"><a href="{{ url_for('web.landing') }}">&larr; Back to the home page</a></p>
-</section>
+{% block title %}Sign in · StillWatch{% endblock %}
+{% block styles %}<link rel="stylesheet" href="{{ url_for('static', filename='site.css') }}">{% endblock %}
+{% block bodyclass %}auth{% endblock %}
+{% block body %}
+<div class="auth-wrap">
+  <section class="auth-art" aria-hidden="true">
+    <a class="brand on-dark" href="{{ url_for('web.landing') }}" tabindex="-1">
+      <img src="{{ url_for('static', filename='favicon.svg') }}" alt="" width="34" height="34"><span>StillWatch</span>
+    </a>
+    <div class="auth-art-copy">
+      <p class="auth-line">Between two lab tests, a tank keeps changing.</p>
+      <p class="auth-sub">StillWatch notices, and tells the person responsible.</p>
+    </div>
+    <svg class="auth-trace" viewBox="0 0 520 120" preserveAspectRatio="none">
+      <path class="trace-line" d="M0 78 C30 76 50 80 80 77 S130 74 160 78 220 80 250 76 290 70 310 40 330 8 350 18 380 60 410 72 470 78 520 76"/>
+      <circle class="trace-dot" cx="350" cy="18" r="5"/>
+    </svg>
+  </section>
+
+  <section class="auth-panel">
+    <div class="auth-card">
+      <a class="auth-back" href="{{ url_for('web.landing') }}">&larr; Back to the overview</a>
+      <h1>Sign in</h1>
+      <p class="muted">Use the demo account to explore simulated tanks, or the testing account for pilot data.</p>
+      {% for m in get_flashed_messages() %}<div class="flash error" role="alert">{{ m }}</div>{% endfor %}
+      <form method="post" class="auth-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <label>Username
+          <input name="username" value="{{ prefill }}" autocomplete="username" autocapitalize="none" spellcheck="false" required {% if not prefill %}autofocus{% endif %}>
+        </label>
+        <label>Password
+          <span class="pw">
+            <input id="pw" name="password" type="password" autocomplete="current-password" required {% if prefill %}autofocus{% endif %}>
+            <button type="button" class="pw-toggle" id="pw-toggle" aria-controls="pw" aria-pressed="false">Show</button>
+          </span>
+        </label>
+        <button class="btn primary wide">Sign in</button>
+      </form>
+      <div class="or"><span>or look around first</span></div>
+      {{ quick_buttons(quick_demo, quick_testing) }}
+      <p class="muted small">The demo only shows simulated data.</p>
+    </div>
+  </section>
+</div>
+<script>
+(function () {
+  var b = document.getElementById('pw-toggle'), i = document.getElementById('pw');
+  if (!b || !i) return;
+  b.addEventListener('click', function () {
+    var show = i.type === 'password';
+    i.type = show ? 'text' : 'password';
+    b.textContent = show ? 'Hide' : 'Show';
+    b.setAttribute('aria-pressed', String(show));
+  });
+})();
+</script>
 {% endblock %}

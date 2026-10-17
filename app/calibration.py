@@ -11,8 +11,15 @@ def ph_two_point(mv_ph4, mv_ph7):
     return {"slope": slope, "offset": 7.0 - slope * mv_ph7}
 
 
-def ph_from_mv(mv, params):
-    return params["slope"] * mv + params["offset"]
+def ph_from_mv(mv, params, temp_c=None):
+    """pH from raw mV. When the calibration recorded the buffer temperature and the reading has a
+    temperature, the electrode's slope is scaled by absolute temperature (the Nernst relation),
+    pivoting on pH 7 where the electrode output does not change with temperature."""
+    cal_t = params.get("cal_temp_c")
+    if cal_t is None or temp_c is None:
+        return params["slope"] * mv + params["offset"]
+    mv7 = (7.0 - params["offset"]) / params["slope"]
+    return 7.0 + params["slope"] * (mv - mv7) * (cal_t + 273.15) / (temp_c + 273.15)
 
 
 def intervals(calibrations):

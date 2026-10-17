@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}{{ tank.name }} · tank status{% endblock %}
+{% block styles %}<link rel="stylesheet" href="{{ url_for('static', filename='site.css') }}"><meta name="robots" content="noindex">{% endblock %}
+{% block bodyclass %}pub{% endblock %}
+{% block body %}
+<main class="pub-wrap">
+  <div class="pub-band"><span class="brand on-dark"><img src="{{ url_for('static', filename='favicon.svg') }}" alt="" width="26" height="26"><span>StillWatch</span></span></div>
+  <article class="pub-card">
+    <h1>{{ tank.name }}</h1>
+    {% if tank.location %}<p class="muted">{{ tank.location }}</p>{% endif %}
+    <p class="pub-status {{ tank.public_status }}">{{ label }}</p>
+    {% if tank.public_note %}<p class="pub-note">{{ tank.public_note }}</p>{% endif %}
+    {% if tank.public_updated_at %}<p class="muted">Confirmed by the tank's operator on {{ tank.public_updated_at | local('%d %b %Y, %H:%M') }} (India time).</p>{% endif %}
+    {% if stale %}<p class="pub-stale">This status has not been updated for a while and may be out of date. Ask the operator.</p>{% endif %}
+    <hr>
+    <p class="muted">This page shows what the tank's operator has reported. It is not a water quality certificate, and sensors cannot detect bacteria or metals. If the water looks, smells or tastes unusual, tell the operator.</p>
+  </article>
+</main>
+{% endblock %}

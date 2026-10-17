@@ -1,25 +1,51 @@
-{% extends "base.html" %}
-{% from "_macros.html" import badge %}
-{% block title %}Alerts{% endblock %}
+{% extends "app_base.html" %}
+{% from "_macros.html" import badge, kind_badge, icon %}
+{% block title %}Alerts · StillWatch{% endblock %}
 {% block content %}
-<h1>Alerts</h1>
-{% for a in alerts %}
-<section class="card alert {{ a.severity }}">
-  <div class="between">
-    <div><b>{{ a.name }}</b> · {{ a.created_at | local }}</div>{{ badge(a.severity) }}
+{% set n_open = alerts | selectattr('status', 'equalto', 'open') | list | length %}
+<header class="page-head">
+  <div>
+    <h1>Alerts</h1>
+    <p class="muted">Each alert says what changed and what to do next. Close it as a real problem or a false alarm: that feedback is how alerts get better.</p>
   </div>
-  <p>{{ a.message }}</p>
-  <details><summary>Why it fired</summary>
-    <ul>{% for f in a.findings %}<li>{{ f.detail }} <span class="muted">({{ f.detector | replace('_', ' ') }})</span></li>{% endfor %}</ul>
+  <div class="actions"><a class="btn small" href="{{ url_for('web.notifications') }}">{{ icon('bell') }} SMS and WhatsApp</a></div>
+  {% if alerts %}
+  <div class="seg" role="group" aria-label="Filter alerts" id="alert-filter" data-default="{{ 'open' if n_open else 'all' }}">
+    <button type="button" data-f="open" aria-pressed="false">Open ({{ n_open }})</button>
+    <button type="button" data-f="closed" aria-pressed="false">Closed ({{ alerts | length - n_open }})</button>
+    <button type="button" data-f="all" aria-pressed="false">All</button>
+  </div>
+  {% endif %}
+</header>
+
+<div id="alert-list">
+{% for a in alerts %}
+<article class="alert-card {{ a.severity }}{{ ' closed' if a.status != 'open' }}" data-state="{{ a.status }}">
+  <div class="alert-top">
+    <div><b><a href="{{ url_for('web.tank', device_id=a.device_id) }}">{{ a.name }}</a></b>
+      <div class="alert-time">{{ a.created_at | local }} ({{ a.created_at | ago }})</div></div>
+    {{ kind_badge(a) }}
+  </div>
+  <p class="alert-msg">{{ a.message }}</p>
+  <details class="why"><summary>{{ 'Details' if a.kind == 'device' else 'Why it fired' }}</summary>
+    <ul>{% for f in a.findings %}<li>{{ f.detail }} <span>({{ f.detector | replace('_', ' ') }})</span></li>{% endfor %}</ul>
   </details>
-  <p class="muted">{{ 'AI-assisted explanation' if a.message_source == 'llm' else 'Automatic summary' }}</p>
   {% if a.status == 'open' %}
-  <form method="post" action="{{ url_for('web.alert_feedback', alert_id=a.id) }}" class="inline">
+  <form method="post" action="{{ url_for('web.alert_feedback', alert_id=a.id) }}" class="fb">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <button name="feedback" value="confirmed">Real problem</button>
-    <button name="feedback" value="false_alarm" class="secondary">False alarm</button>
+    {% if a.kind == 'device' %}<button class="btn small" name="feedback" value="dismiss">Dismiss</button>{% else %}<button class="btn small primary" name="feedback" value="confirmed">Real problem</button>
+    <button class="btn small" name="feedback" value="false_alarm">False alarm</button>{% endif %}
   </form>
-  {% else %}<p class="muted">Closed: {{ a.feedback | replace('_', ' ') }}</p>{% endif %}
-</section>
-{% else %}<p class="muted">No alerts.</p>{% endfor %}
+  {% else %}<p class="closed-note">{{ icon('check') }} {% if a.kind == 'device' %}Closed (device back online or dismissed){% else %}Closed as {{ a.feedback | replace('_', ' ') }}{% endif %}</p>{% endif %}
+  <p class="alert-src">{{ 'AI-assisted explanation' if a.message_source == 'llm' else 'Automatic summary' }}{% if a.kind == 'device' %} · about the device, not the water{% endif %}</p>
+</article>
+{% else %}
+<div class="empty">
+  {{ icon('bell') }}
+  <h2>No alerts</h2>
+  <p>When a tank changes in an unusual way, the alert will appear here with an explanation and a suggested next step.</p>
+</div>
+{% endfor %}
+</div>
+<p class="empty" id="alert-none" hidden>Nothing in this view.</p>
 {% endblock %}

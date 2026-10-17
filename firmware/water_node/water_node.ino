@@ -1,11 +1,15 @@
-// Water-quality node: reads pH + turbidity (+ TDS when wired), shows status on the LCD/LED/buzzer,
-// and uploads readings to the Flask backend. Local alerts never wait on the network.
+// StillWatch water-quality node: reads pH, turbidity (+ TDS, temperature, ORP when wired), shows status on the
+// LCD/LED/buzzer, keeps every reading in a flash queue, and uploads them to the Flask backend in batches.
+// Local alerts never wait on the network, and no reading is lost to an outage or a reboot.
 //
-// Needs: arduino-esp32 core 3.x, library "LiquidCrystal I2C" (Frank de Brabander).
-// Board in Arduino IDE: "ESP32S2 Dev Module". If the Serial Monitor is blank, set
-// Tools > USB CDC On Boot > Enabled (or use the board's UART USB port).
+// Needs: arduino-esp32 core 3.x, library "LiquidCrystal I2C" (Frank de Brabander); for HAVE_TEMP also the
+// "OneWire" and "DallasTemperature" libraries. Board in Arduino IDE: "ESP32S2 Dev Module". If the Serial
+// Monitor is blank, set Tools > USB CDC On Boot > Enabled (or use the board's UART USB port).
 //
-// Serial commands (115200 baud): cal4, cal7, clearcal, status, ledtest
+// Files: logic.h (conversions, JSON, settings; unit-tested on a PC), queue.h (flash queue; unit-tested),
+// fsstore.h (LittleFS adapter), net.h (upload, check-in, OTA), portal.h (WiFi setup portal).
+//
+// Serial commands (115200 baud): cal4, cal7, clearcal, calorp <mV>, status, info, ledtest, portal, clearq, reboot
 //   Put the pH probe in the pH 4 buffer, wait ~1 min, send "cal4". Rinse, pH 7 buffer, send "cal7".
 //   Until both are done pH is reported as "--" and is left out of uploads and local rules.
 
@@ -15,146 +19,171 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 #include <Preferences.h>
+#include <Update.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+#include <esp_system.h>
+#include <mbedtls/sha256.h>
 #include <math.h>
 #include <time.h>
+#include <sys/time.h>
 #include "config.h"
 #include "secrets.h"
+#include "logic.h"
+#include "queue.h"
+#include "fsstore.h"
+#if HAVE_TEMP
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#endif
 
-// ------------------------------------------------------------------ data
-
-struct Sample {
-  time_t ts;        // 0 = clock not synced; the server then stamps its own time
-  float ph;         // NAN until calibrated
-  float ph_mv;
-  float ntu;
-  float turb_mv;
-  float tds;        // NAN when no TDS probe
-};
+// ------------------------------------------------------------------ state
 
 enum NetState { NET_OFFLINE, NET_OK, NET_AUTH };
 
 LiquidCrystal_I2C lcd(LCD_I2C_ADDR, 16, 2);
 Preferences prefs;
+#if HAVE_TEMP
+OneWire oneWire(PIN_ONEWIRE);
+DallasTemperature tempSensor(&oneWire);
+#endif
+
+FlashStore flash;
+PersistentQueue<FlashStore, QUEUE_CAPACITY> queue(flash);
+SemaphoreHandle_t qMutex;                   // the queue is touched by loop() and by the network task
 
 volatile NetState netState = NET_OFFLINE;
-Sample latest;
+Settings settings = {READ_PERIOD_MS, SEND_PERIOD_MS, PH_MIN, PH_MAX, TURB_MAX_NTU};
+PhCal phCal;
+float orpOffsetMv = 0;
+
+Rec latest;
 bool haveReading = false;
 bool alertRed = false;
-unsigned long lastRead = 0, lastSend = 0, lastBeep = 0;
-bool everSent = false;
+volatile bool storageFault = false;
+volatile uint8_t currentFaults = 0;         // what the last reading said; sent with every upload and check-in
+unsigned long lastRead = 0, lastStore = 0, lastBeep = 0, lastOkMs = 0;
+bool everStored = false;
+uint32_t bootId = 0;
+const char *bootReason = "other";
 
-bool phCalibrated = false;
-float phSlope = 0, phOffset = 0;
+// Where this node talks to. Saved setup-portal values win over the compile-time defaults in secrets.h.
+struct NetCfg { char ssid[33], pass[65], url[96], token[72], dev[65]; } netCfg;
 
-// Ring buffer of unsent samples, shared with the network task.
-Sample queueBuf[QUEUE_CAPACITY];
-int qHead = 0, qCount = 0;
-SemaphoreHandle_t qMutex;
+volatile bool portalRequested = false, portalActive = false;
+char portalL0[17] = "", portalL1[17] = "";
 
-void setLed(bool r, bool g);               // defined below; used by the serial commands
+void setLed(bool r, bool g);                // defined below; used by the serial commands
 
-// --------------------------------------------------------------- queue
+// ------------------------------------------------------------ small helpers
 
-void qPush(const Sample &s) {
-  xSemaphoreTake(qMutex, portMAX_DELAY);
-  if (qCount == QUEUE_CAPACITY) {          // full: drop the oldest
-    qHead = (qHead + 1) % QUEUE_CAPACITY;
-    qCount--;
+void qLock()   { xSemaphoreTake(qMutex, portMAX_DELAY); }
+void qUnlock() { xSemaphoreGive(qMutex); }
+
+void loadNetCfg() {
+  prefs.begin("net", true);
+  strlcpy(netCfg.ssid,  prefs.getString("ssid",  WIFI_SSID).c_str(),   sizeof netCfg.ssid);
+  strlcpy(netCfg.pass,  prefs.getString("pass",  WIFI_PASS).c_str(),   sizeof netCfg.pass);
+  strlcpy(netCfg.url,   prefs.getString("url",   SERVER_URL).c_str(),  sizeof netCfg.url);
+  strlcpy(netCfg.token, prefs.getString("token", DEVICE_TOKEN).c_str(), sizeof netCfg.token);
+  strlcpy(netCfg.dev,   prefs.getString("dev",   DEVICE_ID).c_str(),   sizeof netCfg.dev);
+  prefs.end();
+}
+
+void loadSettings() {
+  prefs.begin("set", true);
+  settings.read_ms  = prefs.getUInt("rd", settings.read_ms);
+  settings.send_ms  = prefs.getUInt("sd", settings.send_ms);
+  settings.ph_min   = prefs.getFloat("pmin", settings.ph_min);
+  settings.ph_max   = prefs.getFloat("pmax", settings.ph_max);
+  settings.turb_max = prefs.getFloat("tmax", settings.turb_max);
+  prefs.end();
+}
+
+void saveSettings() {
+  prefs.begin("set", false);
+  prefs.putUInt("rd", settings.read_ms);
+  prefs.putUInt("sd", settings.send_ms);
+  prefs.putFloat("pmin", settings.ph_min);
+  prefs.putFloat("pmax", settings.ph_max);
+  prefs.putFloat("tmax", settings.turb_max);
+  prefs.end();
+}
+
+const char *resetReasonText() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:   return "power_on";
+    case ESP_RST_SW:        return "software";
+    case ESP_RST_PANIC:     return "panic";
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT:       return "watchdog";
+    case ESP_RST_BROWNOUT:  return "brownout";
+    default:                return "other";
   }
-  queueBuf[(qHead + qCount) % QUEUE_CAPACITY] = s;
-  qCount++;
-  xSemaphoreGive(qMutex);
-}
-
-bool qPeek(Sample &out) {
-  bool ok = false;
-  xSemaphoreTake(qMutex, portMAX_DELAY);
-  if (qCount > 0) { out = queueBuf[qHead]; ok = true; }
-  xSemaphoreGive(qMutex);
-  return ok;
-}
-
-void qPop() {
-  xSemaphoreTake(qMutex, portMAX_DELAY);
-  if (qCount > 0) { qHead = (qHead + 1) % QUEUE_CAPACITY; qCount--; }
-  xSemaphoreGive(qMutex);
-}
-
-int qSize() {
-  xSemaphoreTake(qMutex, portMAX_DELAY);
-  int n = qCount;
-  xSemaphoreGive(qMutex);
-  return n;
 }
 
 // -------------------------------------------------------------- sensors
 
-// Average of N_SAMPLES ADC reads, in millivolts at the SENSOR output (divider undone).
-float readSensorMv(int pin) {
-  long sum = 0;
+struct Adc { float mv; float spread; };
+
+// Trimmed mean of N_SAMPLES conversions, in millivolts at the SENSOR output (divider undone).
+Adc readAdc(int pin, float divider) {
+  uint16_t a[N_SAMPLES];
   for (int i = 0; i < N_SAMPLES; i++) {
-    sum += analogReadMilliVolts(pin);
-    delayMicroseconds(500);
+    a[i] = (uint16_t)analogReadMilliVolts(pin);
+    delayMicroseconds(300);
   }
-  return ((float)sum / N_SAMPLES) * DIVIDER_RATIO;
+  float spread;
+  float mv = trimmedMean(a, N_SAMPLES, TRIM_SAMPLES, &spread);
+  return {mv * divider, spread * divider};
 }
 
-float phFromMv(float mv) {
-  return phCalibrated ? phSlope * mv + phOffset : NAN;
-}
-
-// Placeholder: the common datasheet curve for hobby turbidity modules (clear water ~4.2 V).
-// Replace with a calibration against known turbidity standards; raw mV is always uploaded.
-float ntuFromMv(float mv) {
-  float v = mv / 1000.0f;
-  if (v >= 4.2f) return 0.0f;
-  if (v < 2.5f) return 3000.0f;
-  float ntu = -1120.4f * v * v + 5742.3f * v - 4352.9f;
-  return ntu < 0 ? 0 : ntu;
-}
-
-#if HAVE_TDS
-// Common datasheet polynomial for hobby TDS modules, no temperature compensation yet.
-float tdsFromMv(float mv) {
-  float v = mv / 1000.0f;
-  return (133.42f * v * v * v - 255.86f * v * v + 857.39f * v) * 0.5f;
-}
-#endif
+bool adcFault(const Adc &a) { return sensorFault(a.mv, a.spread, FAULT_LO_MV, FAULT_HI_MV, FAULT_SPREAD_MV); }
 
 // ----------------------------------------------------------- calibration
 
-void computePhCal(float mv4, float mv7) {
-  if (isnan(mv4) || isnan(mv7) || fabsf(mv7 - mv4) < 20.0f) { phCalibrated = false; return; }
-  phSlope = 3.0f / (mv7 - mv4);
-  phOffset = 7.0f - phSlope * mv7;
-  phCalibrated = true;
-}
-
 void loadCalibration() {
   prefs.begin("cal", true);
-  float mv4 = prefs.getFloat("mv4", NAN);
-  float mv7 = prefs.getFloat("mv7", NAN);
+  float mv4 = prefs.getFloat("mv4", NAN), mv7 = prefs.getFloat("mv7", NAN);
+  float t4 = prefs.getFloat("t4", NAN), t7 = prefs.getFloat("t7", NAN);
+  orpOffsetMv = prefs.getFloat("orp", 0);
   prefs.end();
-  computePhCal(mv4, mv7);
+  float temp = NAN;                         // temperature of the buffers: the mean of what was recorded
+  if (tempValid(t4) && tempValid(t7)) temp = (t4 + t7) / 2; else if (tempValid(t4)) temp = t4; else if (tempValid(t7)) temp = t7;
+  phCal = phCalFromPoints(mv4, mv7, temp);
 }
 
-void saveCalPoint(const char *key, float mv) {
+void saveCalPoint(const char *mvKey, const char *tKey, float mv, float tempC) {
   prefs.begin("cal", false);
-  prefs.putFloat(key, mv);
-  float mv4 = prefs.getFloat("mv4", NAN);
-  float mv7 = prefs.getFloat("mv7", NAN);
+  prefs.putFloat(mvKey, mv);
+  prefs.putFloat(tKey, tempC);              // NAN when there is no temperature probe: no compensation then
   prefs.end();
-  computePhCal(mv4, mv7);
+  loadCalibration();
 }
 
-void handleCommand(const char *cmd) {
+float currentTemp() { return latest.temp; }
+
+void handleCommand(char *cmd) {
+  char *arg = strchr(cmd, ' ');
+  if (arg) { *arg++ = 0; while (*arg == ' ') arg++; }
   if (strcmp(cmd, "cal4") == 0 || strcmp(cmd, "cal7") == 0) {
-    float mv = readSensorMv(PIN_PH);
-    saveCalPoint(strcmp(cmd, "cal4") == 0 ? "mv4" : "mv7", mv);
-    Serial.printf("Saved %s = %.1f mV. pH calibrated: %s\n", cmd, mv, phCalibrated ? "yes" : "not yet");
+    Adc a = readAdc(PIN_PH, DIVIDER_RATIO);
+    bool is4 = strcmp(cmd, "cal4") == 0;
+    saveCalPoint(is4 ? "mv4" : "mv7", is4 ? "t4" : "t7", a.mv, currentTemp());
+    Serial.printf("Saved %s = %.1f mV (spread %.0f). pH calibrated: %s%s\n", cmd, a.mv, a.spread,
+                  phCal.valid ? "yes" : "not yet", isnan(phCal.calTempC) ? "" : ", temperature-compensated");
+  } else if (strcmp(cmd, "calorp") == 0 && arg && *arg) {
+    // Probe in an ORP standard of known value (in mV): stores the offset that makes the reading match.
+    float known = atof(arg);
+    Adc a = readAdc(PIN_ORP, ORP_DIVIDER_RATIO);
+    float raw = orpFromMv(a.mv, ORP_ZERO_MV, ORP_GAIN, 0);
+    orpOffsetMv = raw - known;
+    prefs.begin("cal", false); prefs.putFloat("orp", orpOffsetMv); prefs.end();
+    Serial.printf("ORP offset set to %.1f mV (raw %.1f, standard %.1f)\n", orpOffsetMv, raw, known);
   } else if (strcmp(cmd, "clearcal") == 0) {
     prefs.begin("cal", false); prefs.clear(); prefs.end();
-    phCalibrated = false;
+    phCal = PhCal(); orpOffsetMv = 0;
     Serial.println("Calibration cleared.");
   } else if (strcmp(cmd, "ledtest") == 0) {
     // Expect: red for 1 s, green for 1 s, off. If nothing lights, the LED may be wired/typed the other way
@@ -164,16 +193,29 @@ void handleCommand(const char *cmd) {
     setLed(false, true);  delay(1000);
     setLed(alertRed, !alertRed);
   } else if (strcmp(cmd, "status") == 0) {
-    Serial.printf("wifi=%d net=%d queued=%d calibrated=%d time_synced=%d\n",
-                  WiFi.status() == WL_CONNECTED, (int)netState, qSize(), phCalibrated,
-                  time(nullptr) > 1700000000);
+    qLock(); uint32_t qn = queue.count(); uint32_t lost = queue.dropped; qUnlock();
+    Serial.printf("wifi=%d net=%d queued=%u lost=%u calibrated=%d time_synced=%d faults=0x%02x\n",
+                  WiFi.status() == WL_CONNECTED, (int)netState, qn, lost, phCal.valid,
+                  time(nullptr) > 1700000000, currentFaults);
+  } else if (strcmp(cmd, "info") == 0) {
+    Serial.printf("fw %s, device %s, server %s, ssid %s, boot %s\nread %lu ms, send %lu ms, pH limits %.1f-%.1f, turbidity limit %.1f NTU\n",
+                  FW_VERSION, netCfg.dev, netCfg.url, netCfg.ssid, bootReason, (unsigned long)settings.read_ms,
+                  (unsigned long)settings.send_ms, settings.ph_min, settings.ph_max, settings.turb_max);
+  } else if (strcmp(cmd, "portal") == 0) {
+    Serial.println("Opening the WiFi setup portal.");
+    portalRequested = true;
+  } else if (strcmp(cmd, "clearq") == 0) {
+    qLock(); queue.clearAll(); qUnlock();
+    Serial.println("Unsent readings cleared.");
+  } else if (strcmp(cmd, "reboot") == 0) {
+    ESP.restart();
   } else if (cmd[0]) {
-    Serial.println("Commands: cal4, cal7, clearcal, status, ledtest");
+    Serial.println("Commands: cal4, cal7, clearcal, calorp <mV>, status, info, ledtest, portal, clearq, reboot");
   }
 }
 
 void pollSerial() {
-  static char buf[24];
+  static char buf[40];
   static int n = 0;
   while (Serial.available()) {
     char c = (char)Serial.read();
@@ -191,121 +233,90 @@ void setLed(bool r, bool g) {
   digitalWrite(PIN_LED_B, !on);              // blue off
 }
 
-void showLcd() {
-  char l0[17], l1[17];
-  if (isnan(latest.ph)) snprintf(l0, sizeof l0, "pH --  N %.1f", latest.ntu);
-  else                  snprintf(l0, sizeof l0, "pH %.2f N %.1f", latest.ph, latest.ntu);
-  if (alertRed) snprintf(l1, sizeof l1, "TEST RECOMMENDED");
-  else          snprintf(l1, sizeof l1, "No alert %s q%d", netState == NET_OK ? "ok" : "--", qSize());
-  lcd.setCursor(0, 0); lcd.printf("%-16s", l0);
-  lcd.setCursor(0, 1); lcd.printf("%-16s", l1);
+void faultText(uint8_t f, char *out, size_t cap) {
+  out[0] = 0;
+  for (int i = 0; i < 7; i++)
+    if (f & (1u << i)) { if (out[0]) strlcat(out, ",", cap); strlcat(out, FAULT_NAMES[i], cap); }
 }
 
-// Local rule: the same hard limits as the backend. Works with no network.
-bool outsideLimits(const Sample &s) {
-  if (!isnan(s.ph) && (s.ph < PH_MIN || s.ph > PH_MAX)) return true;
-  return s.ntu > TURB_MAX_NTU;
+void showLcd() {
+  char l0[40], l1[40];
+  if (portalActive) {                        // the setup portal owns the display while it is open
+    lcd.setCursor(0, 0); lcd.printf("%-16s", portalL0);
+    lcd.setCursor(0, 1); lcd.printf("%-16s", portalL1);
+    return;
+  }
+  bool extra = (HAVE_TEMP || HAVE_TDS || HAVE_ORP) && ((millis() / 5000) % 2);
+  if (extra) {                               // second page: the optional sensors
+    String s;
+    if (!isnan(latest.temp)) s += "T" + String(latest.temp, 1) + " ";
+    if (!isnan(latest.tds))  s += "D" + String(latest.tds, 0) + " ";
+    if (!isnan(latest.orp))  s += "O" + String(latest.orp, 0);
+    snprintf(l0, sizeof l0, "%s", s.c_str());
+  } else if (isnan(latest.ph)) snprintf(l0, sizeof l0, "pH --  N %.1f", latest.ntu);
+  else                         snprintf(l0, sizeof l0, "pH %.2f N %.1f", latest.ph, latest.ntu);
+
+  if (alertRed) snprintf(l1, sizeof l1, "TEST RECOMMENDED");
+  else if (currentFaults & 0x1F) {
+    char f[32]; faultText(currentFaults & 0x1F, f, sizeof f);
+    snprintf(l1, sizeof l1, "Check:%s", f);
+  } else {
+    qLock(); uint32_t qn = queue.count(); qUnlock();
+    snprintf(l1, sizeof l1, "No alert %s q%u", netState == NET_OK ? "ok" : "--", (unsigned)qn);
+  }
+  lcd.setCursor(0, 0); lcd.printf("%-16.16s", l0);
+  lcd.setCursor(0, 1); lcd.printf("%-16.16s", l1);
 }
 
 void takeReading() {
-  Sample s;
-  s.ph_mv = readSensorMv(PIN_PH);
-  s.turb_mv = readSensorMv(PIN_TURB);
-  s.ph = phFromMv(s.ph_mv);
-  s.ntu = ntuFromMv(s.turb_mv);
-#if HAVE_TDS
-  s.tds = tdsFromMv(readSensorMv(PIN_TDS));
-#else
-  s.tds = NAN;
-#endif
-  time_t t = time(nullptr);
-  s.ts = t > 1700000000 ? t : 0;
+  Rec r;
+  recInit(r);
 
-  latest = s;
+  float tempC = NAN;
+#if HAVE_TEMP
+  tempSensor.requestTemperatures();          // blocks about 750 ms at 12 bits
+  float t = tempSensor.getTempCByIndex(0);
+  if (tempValid(t)) { r.temp = t; tempC = t; } else r.faults |= F_TEMP;
+#endif
+
+  Adc a = readAdc(PIN_PH, DIVIDER_RATIO);
+  if (adcFault(a)) r.faults |= F_PH;
+  else { r.ph_mv = a.mv; r.ph = phFromMv(a.mv, phCal, tempC); }     // NAN until calibrated
+
+  a = readAdc(PIN_TURB, DIVIDER_RATIO);
+  if (adcFault(a)) r.faults |= F_TURB;
+  else { r.turb_mv = a.mv; r.ntu = ntuFromMv(a.mv); }
+
+#if HAVE_TDS
+  a = readAdc(PIN_TDS, DIVIDER_RATIO);
+  if (adcFault(a)) r.faults |= F_TDS;
+  else { r.tds_mv = a.mv; r.tds = tdsFromMv(a.mv, tempC); }
+#endif
+#if HAVE_ORP
+  a = readAdc(PIN_ORP, ORP_DIVIDER_RATIO);
+  if (adcFault(a)) r.faults |= F_ORP;
+  else { r.orp_mv = a.mv; r.orp = orpFromMv(a.mv, ORP_ZERO_MV, ORP_GAIN, orpOffsetMv); }
+#endif
+
+  time_t now = time(nullptr);
+  r.ts = now > 1700000000 ? (uint32_t)now : 0;
+  r.boot_id = bootId;
+  r.boot_s = millis() / 1000;
+  if (!r.ts && millis() > 600000UL) r.faults |= F_CLOCK;             // no NTP for 10 minutes
+  if (storageFault) r.faults |= F_STORAGE;
+
+  latest = r;
+  currentFaults = r.faults;
   haveReading = true;
-  alertRed = outsideLimits(s);
+  alertRed = outsideLimits(r, settings);
   setLed(alertRed, !alertRed);
   showLcd();
-  Serial.printf("ph=%.2f (%.0f mV)  turb=%.2f NTU (%.0f mV)  alert=%d  queued=%d\n",
-                s.ph, s.ph_mv, s.ntu, s.turb_mv, alertRed, qSize());
+  Serial.printf("ph=%.2f (%.0f mV)  turb=%.2f NTU (%.0f mV)  tds=%.0f  temp=%.1f  orp=%.0f  faults=0x%02x  alert=%d\n",
+                r.ph, r.ph_mv, r.ntu, r.turb_mv, r.tds, r.temp, r.orp, r.faults, alertRed);
 }
 
-// ------------------------------------------------------------- networking
-
-int postSample(const Sample &s) {
-  char body[360];
-  int n = snprintf(body, sizeof body, "{\"schema\":1,\"device_id\":\"%s\"", DEVICE_ID);
-  if (s.ts) {
-    struct tm tmv;
-    gmtime_r(&s.ts, &tmv);
-    n += strftime(body + n, sizeof body - n, ",\"ts\":\"%Y-%m-%dT%H:%M:%SZ\"", &tmv);
-  }
-  if (!isnan(s.ph)) n += snprintf(body + n, sizeof body - n, ",\"ph\":%.2f", s.ph);
-  n += snprintf(body + n, sizeof body - n, ",\"ph_raw_mv\":%.0f,\"turbidity_ntu\":%.2f,\"turbidity_raw_mv\":%.0f",
-                s.ph_mv, s.ntu, s.turb_mv);
-  if (!isnan(s.tds)) n += snprintf(body + n, sizeof body - n, ",\"tds_ppm\":%.0f", s.tds);
-  snprintf(body + n, sizeof body - n, ",\"fw\":\"%s\"}", FW_VERSION);
-
-  char url[160];
-  snprintf(url, sizeof url, "%s/api/readings", SERVER_URL);
-
-  HTTPClient http;
-  WiFiClientSecure secure;
-  WiFiClient plain;
-  if (strncmp(SERVER_URL, "https", 5) == 0) {
-#if TLS_INSECURE
-    secure.setInsecure();
-#else
-    secure.setCACert(ROOT_CA_PEM);
-#endif
-    http.begin(secure, url);
-  } else {
-    http.begin(plain, url);
-  }
-  http.setTimeout(HTTP_TIMEOUT_MS);
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("X-Device-Token", DEVICE_TOKEN);
-  int code = http.POST((uint8_t *)body, strlen(body));
-  http.end();
-  return code;                               // negative = could not reach the server
-}
-
-bool connectWifi() {
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  for (int i = 0; i < 30 && WiFi.status() != WL_CONNECTED; i++) vTaskDelay(pdMS_TO_TICKS(500));
-  if (WiFi.status() != WL_CONNECTED) return false;
-  configTime(0, 0, "pool.ntp.org", "time.google.com");   // UTC; used for reading timestamps
-  return true;
-}
-
-// Runs beside loop(): uploads queued samples oldest-first and retries with the SAME timestamp,
-// so the server's duplicate check makes retries harmless.
-void netTask(void *) {
-  for (;;) {
-    if (WiFi.status() != WL_CONNECTED) {
-      netState = NET_OFFLINE;
-      if (!connectWifi()) { vTaskDelay(pdMS_TO_TICKS(5000)); continue; }
-    }
-    Sample s;
-    if (!qPeek(s)) { vTaskDelay(pdMS_TO_TICKS(1000)); continue; }
-
-    int code = postSample(s);
-    if (code == 200 || code == 201) {
-      qPop(); netState = NET_OK;
-    } else if (code == 400 || code == 409) {
-      Serial.printf("Server rejected a reading (%d); dropping it.\n", code);
-      qPop();
-    } else if (code == 401) {
-      netState = NET_AUTH;
-      Serial.println("Server says 401: check DEVICE_TOKEN.");
-      vTaskDelay(pdMS_TO_TICKS(30000));
-    } else {
-      netState = NET_OFFLINE;
-      vTaskDelay(pdMS_TO_TICKS(5000));
-    }
-    vTaskDelay(pdMS_TO_TICKS(100));
-  }
-}
+#include "net.h"
+#include "portal.h"
 
 // ------------------------------------------------------------------ setup/loop
 
@@ -314,6 +325,7 @@ void setup() {
   delay(1000);
   pinMode(PIN_LED_R, OUTPUT); pinMode(PIN_LED_G, OUTPUT); pinMode(PIN_LED_B, OUTPUT);
   pinMode(PIN_BUZZER, OUTPUT);
+  pinMode(PIN_PORTAL_BTN, INPUT_PULLUP);
   setLed(false, false);
 
   analogReadResolution(12);
@@ -322,35 +334,60 @@ void setup() {
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
   lcd.init();
   lcd.backlight();
-  lcd.setCursor(0, 0); lcd.print("Water node ");
+  lcd.setCursor(0, 0); lcd.print("StillWatch node ");
   lcd.setCursor(0, 1); lcd.print("v" FW_VERSION);
 
-  loadCalibration();
-  Serial.printf("Water node %s, device %s, pH calibrated: %s\n", FW_VERSION, DEVICE_ID,
-                phCalibrated ? "yes" : "no (use cal4 / cal7)");
+#if HAVE_TEMP
+  tempSensor.begin();
+#endif
 
+  bootId = esp_random();
+  bootReason = resetReasonText();
   qMutex = xSemaphoreCreateMutex();
+  if (!flash.begin()) { storageFault = true; Serial.println("Flash storage failed: readings will not survive an outage."); }
+  queue.begin();
+  loadNetCfg();
+  loadSettings();
+  loadCalibration();
+  Serial.printf("StillWatch node %s, device %s, boot %s, pH calibrated: %s, %u reading(s) waiting in flash\n",
+                FW_VERSION, netCfg.dev, bootReason, phCal.valid ? "yes" : "no (use cal4 / cal7)", (unsigned)queue.count());
+
+  // Hold BOOT for 3 seconds at power-up, or have no WiFi configured at all: open the setup portal.
+  if (digitalRead(PIN_PORTAL_BTN) == LOW) {
+    unsigned long t0 = millis();
+    while (digitalRead(PIN_PORTAL_BTN) == LOW && millis() - t0 < 3000) delay(50);
+    if (millis() - t0 >= 3000) portalRequested = true;
+  }
+  if (!netCfg.ssid[0]) portalRequested = true;
+
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
-  xTaskCreate(netTask, "net", 8192, nullptr, 1, nullptr);
+  xTaskCreate(netTask, "net", 12288, nullptr, 1, nullptr);
 }
 
 void loop() {
   pollSerial();
   unsigned long now = millis();
 
-  if (now - lastRead >= READ_PERIOD_MS || !haveReading) {
+  if (now - lastRead >= settings.read_ms || !haveReading) {
     lastRead = now;
     takeReading();
   }
-  if (haveReading && (!everSent || now - lastSend >= SEND_PERIOD_MS)) {
-    lastSend = now;
-    everSent = true;
-    qPush(latest);
+  if (haveReading && (!everStored || now - lastStore >= settings.send_ms)) {
+    lastStore = now;
+    everStored = true;
+    Rec r = latest;
+    qLock();
+    bool ok = queue.push(r);
+    qUnlock();
+    storageFault = !ok;
   }
   if (alertRed && now - lastBeep >= 5000) {
     lastBeep = now;
     tone(PIN_BUZZER, 2000, 300);
   }
+  // Offline for half a day with no way back: a restart is cheap insurance against a wedged WiFi stack.
+  if (netState == NET_OK) lastOkMs = now;
+  else if (now - lastOkMs > 12UL * 3600UL * 1000UL && !portalActive) ESP.restart();
   delay(20);
 }

@@ -52,9 +52,10 @@ class DetectorTests(unittest.TestCase):
 
 class SchemaTests(unittest.TestCase):
     base = {"schema": 1, "device_id": "tank-01", "ts": "2026-10-09T10:15:00Z", "ph": 7.21}
+    NOW = datetime(2026, 10, 10, tzinfo=timezone.utc)     # fixed "now" so the example timestamp never ages out
 
     def test_valid_minimal(self):
-        clean, errors = schema.validate(dict(self.base))
+        clean, errors = schema.validate(dict(self.base), now=self.NOW)
         self.assertEqual(errors, [])
         self.assertEqual(clean["ph"], 7.21)
         self.assertEqual(clean["ts"], datetime(2026, 10, 9, 10, 15, tzinfo=timezone.utc))
@@ -71,7 +72,7 @@ class SchemaTests(unittest.TestCase):
             [],
         ]
         for payload in bad:
-            clean, errors = schema.validate(payload)
+            clean, errors = schema.validate(payload, now=self.NOW)
             self.assertIsNone(clean)
             self.assertTrue(errors)
 
